@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -16,9 +17,17 @@ class Settings:
     timezone: str
     politemall_url: str  # e.g. https://rplms.polite.edu.sg (used for login + submissions)
     session_dir: str
+    api_key: str = ""                # protects the REST API
+    api_url: str = ""                # where the laptop pushes auto-done results (deployed API)
+    sync_interval_minutes: int = 120
+    host: str = "127.0.0.1"
+    port: int = 8000
 
 
 def load_settings() -> Settings:
+    # .env in the current folder first, then next to the project. Real environment
+    # variables (as set on a hosting platform) always win over both.
+    load_dotenv(Path.cwd() / ".env")
     load_dotenv()
     feed = os.getenv("FEED_URL") or os.getenv("FEED_FILE")
     if not feed:
@@ -33,6 +42,11 @@ def load_settings() -> Settings:
         timezone=os.getenv("TIMEZONE", "Asia/Singapore"),
         politemall_url=os.getenv("POLITEMALL_URL") or _base_url(feed.strip()),
         session_dir=os.getenv("SESSION_DIR", ".session"),
+        api_key=os.getenv("API_KEY", "").strip(),
+        api_url=os.getenv("API_URL", "").strip().rstrip("/"),
+        sync_interval_minutes=int(os.getenv("SYNC_INTERVAL_MINUTES", "120")),
+        host=os.getenv("HOST", "127.0.0.1"),
+        port=int(os.getenv("PORT", "8000")),
     )
 
 

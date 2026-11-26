@@ -39,6 +39,17 @@ CREATE TABLE IF NOT EXISTS deliverables (
 );
 
 CREATE INDEX IF NOT EXISTS idx_deliverables_due ON deliverables (user_id, due_at);
+
+-- Messages waiting to be delivered (by the Telegram bot, the web app, ...).
+CREATE TABLE IF NOT EXISTS notifications (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        INTEGER NOT NULL REFERENCES users(id),
+    deliverable_id INTEGER NOT NULL REFERENCES deliverables(id),
+    kind           TEXT NOT NULL,      -- new | rescheduled:<due> | remind_3d | remind_1d | remind_morning
+    created_at     TEXT NOT NULL,
+    sent_at        TEXT,               -- NULL = pending; 'skipped' = superseded by a later reminder
+    UNIQUE (deliverable_id, kind)
+);
 """
 
 
@@ -52,7 +63,7 @@ class SyncResult:
 
 class Store:
     def __init__(self, path: str | Path = "duetracker.db"):
-        self.conn = sqlite3.connect(str(path))
+        self.conn = sqlite3.connect(str(path), timeout=30)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
@@ -177,6 +188,82 @@ class Store:
                ORDER BY due_at""",
             (user_id, since.isoformat()),
         ).fetchall()
+
+
+    # ---- lookups / notifications ---------------------------------------------
+
+    def count_deliverables(self, user_id: int) -> int:
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM deliverables WHERE user_id = ?", (user_id,)
+        ).fetchone()[0]
+
+    def get_by_uid(self, user_id: int, uid: str) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM deliverables WHERE user_id = ? AND uid = ?", (user_id, uid)
+        ).fetchone()
+
+    def mark_done_by_uids(self, user_id: int, uids: list[str], source: str = "auto") -> list[sqlite3.Row]:
+        """Mark items done by feed UID (stable across machines). Returns newly-done rows."""
+        changed = []
+        with self.conn:
+            for uid in uids:
+                row = self.get_by_uid(user_id, uid)
+                if row is None or row["done"]:
+                    continue
+                self.conn.execute(
+                    "UPDATE deliverables SET done = 1, done_at = ?, done_source = ? WHERE id = ?",
+                    (_now(), source, row["id"]),
+                )
+                changed.append(row)
+        return changed
+
+    def auto_done_uids(self, user_id: int) -> list[str]:
+        return [r[0] for r in self.conn.execute(
+            "SELECT uid FROM deliverables WHERE user_id = ? AND done = 1 AND done_source = 'auto'",
+            (user_id,),
+        )]
+
+    def add_notification(self, user_id: int, deliverable_id: int, kind: str,
+                         skipped: bool = False) -> bool:
+        """Returns True if a new notification was created (False if it already existed)."""
+        with self.conn:
+            cur = self.conn.execute(
+                """INSERT OR IGNORE INTO notifications (user_id, deliverable_id, kind, created_at, sent_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (user_id, deliverable_id, kind, _now(), "skipped" if skipped else None),
+            )
+        return cur.rowcount == 1
+
+    def clear_reminders(self, deliverable_id: int) -> None:
+        """After a deadline moves, its reminders must be planned again."""
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM notifications WHERE deliverable_id = ? AND kind LIKE 'remind_%'",
+                (deliverable_id,),
+            )
+
+    def pending_notifications(self, user_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """SELECT n.id, n.kind, n.created_at, d.id AS deliverable_id, d.module_code,
+                      d.module_name, d.title, d.kind AS item_kind, d.due_at, d.link, d.done
+               FROM notifications n JOIN deliverables d ON d.id = n.deliverable_id
+               WHERE n.user_id = ? AND n.sent_at IS NULL
+               ORDER BY n.id""",
+            (user_id,),
+        ).fetchall()
+
+    def ack_notification(self, user_id: int, notification_id: int) -> bool:
+        with self.conn:
+            cur = self.conn.execute(
+                "UPDATE notifications SET sent_at = ? WHERE user_id = ? AND id = ? AND sent_at IS NULL",
+                (_now(), user_id, notification_id),
+            )
+        return cur.rowcount == 1
+
+    def get(self, user_id: int, item_id: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM deliverables WHERE user_id = ? AND id = ?", (user_id, item_id)
+        ).fetchone()
 
 
 def _now() -> str:

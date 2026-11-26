@@ -32,8 +32,12 @@ POLITEMall calendar feed (.ics)
         ▼
      db.py             SQLite upsert, detect new / rescheduled / removed
         ▼
-     cli.py            sync · due · done · undo      (Telegram bot: planned)
-        ▲
+   reminders.py        3 days before · day before · morning of (08:00)
+        ▼
+  api.py (FastAPI)     REST API + background scheduler (sync every 2h)
+        ▼
+  Telegram bot · web app (planned)        cli.py for local use
+
  politemall_api.py     your own login session → "has this been submitted?"
 ```
 
@@ -69,6 +73,33 @@ were actual deliverables**. The parser deals with:
 | Feed can't tell whether you've submitted | Checked via your own POLITEMall session (see below), plus manual `done` / `undo` |
 | Lecturers change or delete deadlines | Detected by event UID and reported on sync |
 
+## REST API
+
+One backend for every client (Telegram bot, web app, CLI). Run it with
+`python -m duetracker serve` (or `serve.bat`); interactive docs are at `/docs`.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/health` | Liveness check (public) |
+| GET | `/deliverables?days=7` | Upcoming deliverables (`all=true`, `include_done=true`) |
+| POST | `/deliverables/{id}/done` · `/undo` | Mark manually |
+| POST | `/sync` | Sync now (the scheduler also runs every `SYNC_INTERVAL_MINUTES`) |
+| POST | `/submissions` | Laptop reports submitted assignments by feed UID |
+| GET | `/notifications` | Pending alerts: new deadline, deadline moved, reminders |
+| POST | `/notifications/{id}/ack` | Mark an alert as delivered |
+
+All endpoints except `/health` require an `X-API-Key` header.
+
+**Reminders** fire at 08:00 three days before, the day before, and on the day. Only
+the latest applicable stage is sent (a deadline first seen on its due date gives one
+message, not three), reminders stop once an item is done, and they're re-planned if a
+lecturer moves the deadline. The first sync doesn't send "new deadline" alerts for
+everything already in the feed.
+
+**Hybrid deployment.** The API can run on a server 24/7, but POLITEMall's sign-in
+(with 2FA) needs a real screen. So submission checks run on your laptop during `sync`
+and are pushed to the server's `/submissions` endpoint when `API_URL` is set.
+
 ## Setup
 
 ```bash
@@ -85,6 +116,7 @@ then paste it into `.env` as `FEED_URL`.
 ## Usage
 
 On Windows you can just double-click `setup.bat` once, `login.bat` once, then `due.bat`.
+`serve.bat` runs the API locally.
 
 ```bash
 python -m duetracker login             # one-time sign-in for automatic "done" detection
@@ -94,6 +126,7 @@ python -m duetracker due --days 30
 python -m duetracker due --all
 python -m duetracker done 114          # mark as submitted
 python -m duetracker undo 114
+python -m duetracker serve             # REST API + scheduler
 ```
 
 ## Tests
@@ -112,7 +145,10 @@ above. No real student data is committed.
 - [x] CLI
 - [x] Automatic "done" detection for assignments
 - [ ] Same for quizzes and e-learning
-- [ ] Scheduled sync + reminders (3 days, 1 day, morning of)
+- [x] REST API (FastAPI) with API-key auth
+- [x] Scheduled sync + reminder planning (3 days, 1 day, morning of)
 - [ ] Telegram bot (`/due`, `/done`, new-deliverable alerts)
+- [ ] Web app dashboard
+- [ ] Deployment (API 24/7, laptop pushes submission checks)
 - [ ] Multi-user onboarding (paste your own feed link)
 - [ ] POLITEMall news add-on

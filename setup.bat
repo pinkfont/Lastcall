@@ -20,6 +20,7 @@ echo Installing libraries...
 python -m pip install -q --disable-pip-version-check -r requirements.txt
 
 if not exist .env copy .env.example .env >nul
+python -c "import secrets,re,pathlib; p=pathlib.Path('.env'); t=p.read_text(); t=t if re.search(r'^API_KEY=\S', t, re.M) else (re.sub(r'^API_KEY=.*$', 'API_KEY='+secrets.token_urlsafe(32), t, flags=re.M) if re.search(r'^API_KEY=', t, re.M) else t.rstrip()+'\nAPI_KEY='+secrets.token_urlsafe(32)+'\n'); p.write_text(t)"
 
 echo Running tests...
 python -m pytest -q

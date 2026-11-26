@@ -2,6 +2,7 @@
 
     python -m duetracker login           sign in once so submissions can be detected
     python -m duetracker sync            pull the feed, report changes, auto-tick submitted work
+    python -m duetracker serve           run the REST API + scheduler (docs at /docs)
     python -m duetracker due             what's due in the next 7 days
     python -m duetracker due --days 30   ...or any window (--all for everything upcoming)
     python -m duetracker done 12         mark item 12 as submitted
@@ -34,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="duetracker", description="POLITEMall deadline tracker")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("login", help="sign in to POLITEMall so submissions can be detected")
+    sub.add_parser("serve", help="run the REST API and scheduler")
     sync = sub.add_parser("sync", help="fetch the feed and update the database")
     sync.add_argument("--no-submissions", action="store_true", help="skip the auto-done check")
     due = sub.add_parser("due", help="list upcoming deliverables")
@@ -51,6 +53,16 @@ def main(argv: list[str] | None = None) -> int:
     store = Store(settings.db_path)
     try:
         user_id = store.ensure_user(settings.user_name, settings.feed_source, settings.timezone)
+
+        if args.command == "serve":
+            import logging
+            import uvicorn
+            logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+            from .api import create_app
+            store.close()
+            print(f"API running at http://{settings.host}:{settings.port}  (docs: /docs). Ctrl+C to stop.")
+            uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level="info")
+            return 0
 
         if args.command == "login":
             try:
@@ -78,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("  No changes.")
             if not args.no_submissions:
                 _auto_done(store, user_id, settings, now)
+                _push_auto_done(store, user_id, settings)
 
         elif args.command == "due":
             until = None if args.all else now + timedelta(days=args.days)
@@ -123,6 +136,22 @@ def _auto_done(store, user_id, settings, now) -> None:
     print(f"\nChecked {result.checked} assignment(s) on POLITEMall.")
     for title in result.marked:
         print(f"  SUBMITTED  {title}  (ticked off automatically)")
+
+
+def _push_auto_done(store, user_id, settings) -> None:
+    """Hybrid mode: send auto-done results from this laptop to the deployed API."""
+    if not (settings.api_url and settings.api_key):
+        return
+    import requests
+    uids = store.auto_done_uids(user_id)
+    try:
+        resp = requests.post(f"{settings.api_url}/submissions", json={"uids": uids},
+                             headers={"X-API-Key": settings.api_key}, timeout=30)
+        resp.raise_for_status()
+        marked = resp.json()["marked_done"]
+        print(f"Pushed to {settings.api_url}: {len(marked)} newly ticked on the server.")
+    except Exception as exc:
+        print(f"Couldn't push results to {settings.api_url} ({exc.__class__.__name__}).")
 
 
 def _fmt(due_at: datetime, now: datetime) -> str:
