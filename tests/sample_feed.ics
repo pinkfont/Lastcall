@@ -1,0 +1,87 @@
+BEGIN:VCALENDAR
+PRODID:-//D2L//NONSGML v1.0//EN
+VERSION:2.0
+METHOD:PUBLISH
+X-WR-CALNAME:All Courses – Sample Polytechnic
+BEGIN:VEVENT
+DTSTAMP:20261126T031319Z
+SUMMARY:Week 6 Deliverables - Due
+LOCATION:C999 Sample Database Module
+DESCRIPTION:Assignments:\nWeek 6 Deliverables - https://lms.example.edu/d2l/lms/dropbox/user/folder_submit_files.d2l?db=1&ou=1\n\n\nView event – https://lms.example.edu/d2l/le/calendar/1/event/1/detailsview
+DTSTART:20261129T155959Z
+DTEND:20261129T155959Z
+UID:6666-1@lms.example.edu
+END:VEVENT
+BEGIN:VEVENT
+DTSTAMP:20261126T031319Z
+SUMMARY:Week 6 Deliverables - Availability Ends
+LOCATION:C999 Sample Database Module
+DESCRIPTION:Assignments:\nWeek 6 Deliverables - https://lms.example.edu/d2l/lms/dropbox/user/folder_submit_files.d2l?db=1&ou=1
+DTSTART:20261129T155959Z
+DTEND:20261129T155959Z
+UID:6666-2@lms.example.edu
+END:VEVENT
+BEGIN:VEVENT
+DTSTAMP:20261126T031319Z
+SUMMARY:Week 6 Deliverables - Available
+LOCATION:C999 Sample Database Module
+DESCRIPTION:Assignments:\nWeek 6 Deliverables
+DTSTART:20261122T160100Z
+DTEND:20261122T160100Z
+UID:6666-3@lms.example.edu
+END:VEVENT
+BEGIN:VEVENT
+DTSTAMP:20261126T031319Z
+SUMMARY:Lesson 25 Async eLearning Quiz – Due
+LOCATION:C999 Sample Database Module
+DESCRIPTION:Submit quiz to register your attendance.\n\n\nQuizzes:\nLesson 25 Async eLearning Quiz - https://lms.example.edu/d2l/lms/quizzing/quizzing.d2l?ou=1&qi=5
+DTSTART:20261203T155959Z
+DTEND:20261203T155959Z
+UID:6666-4@lms.example.edu
+END:VEVENT
+BEGIN:VEVENT
+DTSTAMP:20261126T031319Z
+SUMMARY:Give feedback as group - CA2 Peer evaluation
+LOCATION:G999 Sample Communication Module
+DESCRIPTION:Rate your teammates.
+DTSTART:20261205T155959Z
+DTEND:20261205T155959Z
+UID:6666-5@lms.example.edu
+END:VEVENT
+BEGIN:VEVENT
+DTSTAMP:20261126T031319Z
+SUMMARY:Hand in - Learning Memo 2
+LOCATION:G999 Sample Communication Module
+DESCRIPTION:Submit your memo.
+DTSTART:20261206T155959Z
+DTEND:20261206T155959Z
+UID:6666-6@lms.example.edu
+END:VEVENT
+BEGIN:VEVENT
+DTSTAMP:20261126T031319Z
+SUMMARY:L15 OOP SCORM e-learning - Due
+LOCATION:C998 Sample Programming Module
+DESCRIPTION:Materials:\nL15 OOP SCORM e-learning\n\n\nView event – https://lms.example.edu/d2l/le/calendar/2/event/7/detailsview
+DTSTART:20270106T155959Z
+DTEND:20270106T155959Z
+UID:6666-7@lms.example.edu
+END:VEVENT
+BEGIN:VEVENT
+DTSTAMP:20261126T031319Z
+SUMMARY:Lesson 08 (E-Learning) – Available
+LOCATION:C998 Sample Programming Module
+DESCRIPTION:Materials:\nLesson 08
+DTSTART:20261227T160100Z
+DTEND:20261227T160100Z
+UID:6666-8@lms.example.edu
+END:VEVENT
+BEGIN:VEVENT
+DTSTAMP:20261126T031319Z
+SUMMARY:Week 2 Deliverables - Due
+LOCATION:C998 Sample Programming Module
+DESCRIPTION:Assignments:\nWeek 2 Deliverables
+DTSTART:20261101T155959Z
+DTEND:20261101T155959Z
+UID:6666-9@lms.example.edu
+END:VEVENT
+END:VCALENDAR

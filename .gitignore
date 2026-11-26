@@ -1,0 +1,18 @@
+# secrets
+.env
+
+# personal data: real feeds and the database
+*.ics
+!tests/sample_feed.ics
+*.db
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+last_response_debug.txt
+
+# saved POLITEMall login session
+.session/
