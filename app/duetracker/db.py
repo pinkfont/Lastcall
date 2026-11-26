@@ -49,6 +49,12 @@ CREATE TABLE IF NOT EXISTS module_aliases (
     PRIMARY KEY (user_id, module_code)
 );
 
+-- Small key/value settings, e.g. when the laptop last reported submissions.
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
 -- Messages waiting to be delivered (by the Telegram bot, the web app, ...).
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -345,6 +351,16 @@ class Store:
                GROUP BY module_code ORDER BY module_code""",
             (user_id, since.isoformat()),
         ).fetchall()
+
+    def get_meta(self, key: str) -> str | None:
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
 
     def get(self, user_id: int, item_id: int) -> sqlite3.Row | None:
         return self.conn.execute(

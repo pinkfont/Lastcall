@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -38,6 +39,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("serve", help="run the REST API and scheduler")
     sync = sub.add_parser("sync", help="fetch the feed and update the database")
     sync.add_argument("--no-submissions", action="store_true", help="skip the auto-done check")
+    sync.add_argument("--log", action="store_true",
+                      help="write output to data/laptop_sync.log (used by the background task)")
     due = sub.add_parser("due", help="list upcoming deliverables")
     due.add_argument("--days", type=int, default=7)
     due.add_argument("--all", action="store_true", help="show everything upcoming")
@@ -46,6 +49,8 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name)
         p.add_argument("id", type=int)
     args = parser.parse_args(argv)
+    if getattr(args, "log", False):
+        return _run_logged(args, argv)
 
     settings = load_settings()
     tz = ZoneInfo(settings.timezone)
@@ -89,8 +94,8 @@ def main(argv: list[str] | None = None) -> int:
             if not (result.new or result.rescheduled or result.removed):
                 print("  No changes.")
             if not args.no_submissions:
-                _auto_done(store, user_id, settings, now)
-                _push_auto_done(store, user_id, settings)
+                result = _auto_done(store, user_id, settings, now)
+                _push_auto_done(store, user_id, settings, result.status)
 
         elif args.command == "due":
             until = None if args.all else now + timedelta(days=args.days)
@@ -120,7 +125,26 @@ def main(argv: list[str] | None = None) -> int:
         store.close()
 
 
-def _auto_done(store, user_id, settings, now) -> None:
+def _run_logged(args, argv) -> int:
+    """Background runs have no window: keep the output in data/laptop_sync.log instead."""
+    import contextlib
+    import io
+    from .paths import DATA_DIR
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+        try:
+            code = main([a for a in (argv or sys.argv[1:]) if a != "--log"])
+        except BaseException as exc:  # still record what went wrong
+            print(f"ERROR: {exc.__class__.__name__}: {exc}")
+            code = 1
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    (DATA_DIR / "laptop_sync.log").write_text(f"Last run: {stamp}\n\n{buffer.getvalue()}", encoding="utf-8")
+    return code
+
+
+def _auto_done(store, user_id, settings, now):
     result = auto_done(store, user_id, settings.politemall_url, settings.session_dir, now)
     if result.status == "not_logged_in":
         print("\nTip: run login.bat once to tick off submitted assignments automatically.")
@@ -132,16 +156,17 @@ def _auto_done(store, user_id, settings, now) -> None:
         print(f"\nChecked {result.checked} assignment(s) on POLITEMall.")
         for title in result.marked:
             print(f"  SUBMITTED  {title}  (ticked off automatically)")
+    return result
 
 
-def _push_auto_done(store, user_id, settings) -> None:
+def _push_auto_done(store, user_id, settings, check_status: str = "ok") -> None:
     """Hybrid mode: send auto-done results from this laptop to the deployed API."""
     if not (settings.api_url and settings.api_key):
         return
     import requests
     uids = store.auto_done_uids(user_id)
     try:
-        resp = requests.post(f"{settings.api_url}/submissions", json={"uids": uids},
+        resp = requests.post(f"{settings.api_url}/submissions", json={"uids": uids, "status": check_status},
                              headers={"X-API-Key": settings.api_key}, timeout=30)
         resp.raise_for_status()
         marked = resp.json()["marked_done"]

@@ -62,7 +62,9 @@ class SyncOut(BaseModel):
 
 class StatusOut(BaseModel):
     last_sync: datetime | None
-    submission_check: str
+    submission_check: str          # ok | expired | not_logged_in | error | waiting_for_laptop | off
+    mode: str = "local"            # local: this machine checks POLITEMall; remote: a laptop pushes
+    last_push: datetime | None = None  # remote mode: when the laptop last reported
 
 
 class ModuleOut(BaseModel):
@@ -81,6 +83,7 @@ class OwnerIn(BaseModel):
 
 class SubmissionsIn(BaseModel):
     uids: list[str]  # feed UIDs that POLITEMall shows as submitted
+    status: str = "ok"  # the laptop's check result: ok | expired | not_logged_in | error
 
 
 class SubmissionsOut(BaseModel):
@@ -146,7 +149,12 @@ def create_app(settings: Settings | None = None, run_scheduler: bool = True,
             r = run_sync_job(store, user_id, settings.feed_source, settings.timezone, now)
             out = SyncOut(in_feed=r.in_feed, new=r.new, rescheduled=r.rescheduled,
                           removed=r.removed, reminders=r.reminders)
-            if check_submissions:
+            if not check_submissions or settings.submission_check == "off":
+                pass
+            elif settings.submission_check == "remote":
+                # A server can't sign in to POLITEMall; the laptop pushes results instead.
+                out.submission_check = store.get_meta("laptop_status") or "waiting_for_laptop"
+            else:
                 a = auto_done(store, user_id, settings.politemall_url, settings.session_dir, now)
                 out.submitted, out.submission_check = len(a.marked), a.status
                 if a.status == "error":
@@ -222,6 +230,8 @@ def create_app(settings: Settings | None = None, run_scheduler: bool = True,
     def submissions(body: SubmissionsIn, store: Store = Depends(store_dep),
                     user_id: int = Depends(user_dep)):
         """The laptop reports which assignments POLITEMall shows as submitted."""
+        store.set_meta("laptop_status", body.status)
+        store.set_meta("laptop_last_push", datetime.now(tz).isoformat())
         rows = store.mark_done_by_uids(user_id, body.uids, source="auto")
         return SubmissionsOut(marked_done=[f"{r['module_code']} {r['title']}" for r in rows])
 
@@ -290,9 +300,15 @@ def create_app(settings: Settings | None = None, run_scheduler: bool = True,
         return {"code": code, "alias": None}
 
     @app.get("/status", response_model=StatusOut, dependencies=protected)
-    def get_status():
+    def get_status(store: Store = Depends(store_dep)):
         """Last sync time and whether the POLITEMall submission check is working."""
-        return StatusOut(**status)
+        if settings.submission_check == "remote":
+            pushed = store.get_meta("laptop_last_push")
+            return StatusOut(last_sync=status["last_sync"],
+                             submission_check=store.get_meta("laptop_status") or "waiting_for_laptop",
+                             mode="remote",
+                             last_push=datetime.fromisoformat(pushed) if pushed else None)
+        return StatusOut(**status, mode=settings.submission_check)
 
     @app.get("/telegram/owner", dependencies=protected)
     def telegram_owner(store: Store = Depends(store_dep), user_id: int = Depends(user_dep)):

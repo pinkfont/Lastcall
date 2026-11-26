@@ -207,3 +207,57 @@ def test_time_format():
 ])
 def test_module_codes(location, code):
     assert _split_module(location)[0] == code
+
+
+# ---- server (remote) mode ---------------------------------------------------------
+
+def _remote_client(tmp_path):
+    from fastapi.testclient import TestClient
+    from duetracker.api import create_app
+    from duetracker.config import Settings
+    from tests.test_api import ics
+    now = datetime.now(timezone.utc)
+    feed = tmp_path / "feed.ics"
+    feed.write_text(ics([("u1", "Soon", now + timedelta(days=2))]), encoding="utf-8")
+    s = Settings(feed_source=str(feed), db_path=str(tmp_path / "t.db"), user_name="me",
+                 timezone="Asia/Singapore", politemall_url="https://x", session_dir=str(tmp_path / ".s"),
+                 api_key="k", submission_check="remote")
+    return TestClient(create_app(s, run_scheduler=False))
+
+
+def test_server_mode_waits_for_laptop_then_uses_its_results(tmp_path, monkeypatch):
+    import duetracker.api as api_mod
+    monkeypatch.setattr(api_mod, "auto_done", lambda *a, **k: pytest.fail("server must not open POLITEMall"))
+    c, H = _remote_client(tmp_path), {"X-API-Key": "k"}
+    assert c.post("/sync", headers=H).json()["submission_check"] == "waiting_for_laptop"
+    st = c.get("/status", headers=H).json()
+    assert st["mode"] == "remote" and st["last_push"] is None
+    assert c.post("/submissions", headers=H, json={"uids": ["u1"], "status": "expired"}).json()["marked_done"]
+    st = c.get("/status", headers=H).json()
+    assert st["submission_check"] == "expired" and st["last_push"] is not None
+    assert c.post("/sync", headers=H).json()["submission_check"] == "expired"
+
+
+def test_bot_warns_once_when_laptop_goes_quiet():
+    sent = []
+
+    class Tg:
+        async def send(self, chat_id, text, markup=None):
+            sent.append(text)
+
+    class Api:
+        def __init__(self):
+            self.last = (datetime.now(SGT) - timedelta(hours=60)).isoformat()
+
+        async def status(self):
+            return {"submission_check": "ok", "mode": "remote", "last_push": self.last}
+
+    api = Api()
+    bot = Bot(Tg(), api)
+    bot.owner = 1
+    asyncio.run(bot.warn_if_login_expired())
+    asyncio.run(bot.warn_if_login_expired())
+    assert sum("haven't heard from your laptop" in t for t in sent) == 1
+    api.last = datetime.now(SGT).isoformat()          # laptop back
+    asyncio.run(bot.warn_if_login_expired())
+    assert bot.warned_quiet is False

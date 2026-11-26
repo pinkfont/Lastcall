@@ -24,6 +24,7 @@ class Settings:
     sync_interval_minutes: int = 120
     host: str = "127.0.0.1"
     port: int = 8000
+    submission_check: str = "local"  # local: this machine checks POLITEMall; remote: a laptop pushes results
     telegram_bot_token: str = ""
     notify_interval_seconds: int = 60
 
@@ -52,6 +53,7 @@ def load_settings() -> Settings:
         sync_interval_minutes=int(os.getenv("SYNC_INTERVAL_MINUTES", "120")),
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "8000")),
+        submission_check=os.getenv("SUBMISSION_CHECK", "local").strip().lower(),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
         notify_interval_seconds=int(os.getenv("NOTIFY_INTERVAL_SECONDS", "60")),
     )

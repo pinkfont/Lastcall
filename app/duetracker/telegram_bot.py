@@ -88,6 +88,9 @@ HELP = (
     "I'll also message you at 8 AM 3 days before, the day before and on the day "
     "something is due, and when a deadline is added, moved or submitted."
 )
+LAPTOP_QUIET_HOURS = 48
+LAPTOP_QUIET_WARNING = ("💤 I haven't heard from your laptop in over 2 days, so submissions aren't being "
+                        "ticked off automatically. They'll catch up next time your laptop is on.")
 EXPIRED_WARNING = ("⚠️ Your POLITEMall login has expired, so I can't see your submissions. "
                    "On your laptop, double-click <b>login</b> and sign in again.")
 
@@ -288,6 +291,7 @@ class Bot:
         self.tg, self.api, self.tz = tg, api, ZoneInfo(tz)
         self.owner: int | None = None
         self.warned_expired = False
+        self.warned_quiet = False
         self.renaming: str | None = None  # module code waiting for a new name
 
     def now(self) -> datetime:
@@ -376,6 +380,8 @@ class Bot:
             notes.append(EXPIRED_WARNING)
         elif r.get("submission_check") == "not_logged_in":
             notes.append("Submissions aren't checked yet: double-click <b>login</b> on your laptop.")
+        elif r.get("submission_check") == "waiting_for_laptop":
+            notes.append("Submissions are checked from your laptop, which hasn't reported in yet.")
         header = "✔️ Synced." + ("\n" + "\n".join(notes) if notes else "")
         await self.tg.edit(chat_id, status_msg["message_id"], header)
         await self.send_long(chat_id, due_list(await self.api.deliverables(7), 7, self.tz, self.now()), MENU)
@@ -466,12 +472,22 @@ class Bot:
         """Tell the owner once when the POLITEMall session runs out."""
         if self.owner is None:
             return
-        check = (await self.api.status())["submission_check"]
+        status = await self.api.status()
+        check = status["submission_check"]
         if check == "expired" and not self.warned_expired:
             await self.tg.send(self.owner, EXPIRED_WARNING)
             self.warned_expired = True
         elif check == "ok":
             self.warned_expired = False
+
+        # Server mode: the laptop does the checking. Say so once if it goes quiet.
+        if status.get("mode") == "remote" and status.get("last_push"):
+            quiet = (self.now() - datetime.fromisoformat(status["last_push"])).total_seconds() / 3600
+            if quiet > LAPTOP_QUIET_HOURS and not self.warned_quiet:
+                await self.tg.send(self.owner, LAPTOP_QUIET_WARNING)
+                self.warned_quiet = True
+            elif quiet <= LAPTOP_QUIET_HOURS:
+                self.warned_quiet = False
 
     async def deliver_notifications(self) -> int:
         if self.owner is None:

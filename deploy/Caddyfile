@@ -1,0 +1,5 @@
+# Caddy gets a free HTTPS certificate for DOMAIN automatically (e.g. 140-238-1-2.sslip.io)
+# and forwards requests to the Lastcall app.
+{$DOMAIN} {
+	reverse_proxy lastcall:8000
+}

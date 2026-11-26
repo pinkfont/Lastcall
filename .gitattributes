@@ -1,0 +1,4 @@
+# Keep line endings right on each OS: shell scripts run on the Linux server,
+# .bat files on Windows.
+*.sh  text eol=lf
+*.bat text eol=crlf

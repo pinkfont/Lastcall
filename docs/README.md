@@ -108,7 +108,7 @@ When the API runs on the machine where you logged in, the scheduled sync checks
 submissions too, and the bot warns you once if the POLITEMall login has expired
 (`GET /status`).
 
-**Hybrid deployment.** The API can run on a server 24/7, but POLITEMall's sign-in
+**Hybrid deployment** ([full guide](DEPLOY.md)). The API can run on a server 24/7, but POLITEMall's sign-in
 (with 2FA) needs a real screen. So submission checks run on your laptop during `sync`
 and are pushed to the server's `/submissions` endpoint when `API_URL` is set.
 
@@ -141,11 +141,12 @@ Create a bot with [@BotFather](https://t.me/BotFather) and put its token in `con
 ## Project layout
 
 ```
-setup.bat  login.bat  due.bat  serve.bat   double-click commands (Windows)
-app/       duetracker/ (code) · tests/ · requirements.txt · .venv/
+setup.bat  login.bat  due.bat  serve.bat  autosync.bat   double-click commands (Windows)
+app/       duetracker/ (code) · tests/ · requirements*.txt · tools/ · .venv/
 config/    .env (your settings, git-ignored) · .env.example
-data/      database, saved POLITEMall login, debug logs (git-ignored)
-docs/      this README
+data/      database, saved POLITEMall login, logs (git-ignored)
+deploy/    Dockerfile · compose.yaml (app + Caddy HTTPS) · install.sh · update.sh
+docs/      this README · DEPLOY.md
 ```
 
 ## Setup
@@ -200,6 +201,7 @@ above. No real student data is committed.
 - [x] REST API (FastAPI) with API-key auth
 - [x] Scheduled sync + reminder planning (3 days, 1 day, morning of)
 - [x] Telegram bot: menu, clean lists, history, pickers, module renaming, alerts
-- [ ] Deployment (API 24/7, laptop pushes submission checks)
+- [x] Deployment: Docker + Caddy (auto HTTPS) on a Linux server; the laptop pushes
+      submission checks every 2 hours via a background task
 - [ ] Multi-user onboarding (paste your own feed link)
 - [ ] POLITEMall news add-on

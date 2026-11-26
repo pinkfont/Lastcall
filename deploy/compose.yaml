@@ -1,0 +1,29 @@
+# Lastcall on a server: the app, plus Caddy for automatic HTTPS.
+# Start:  sudo docker compose -f deploy/compose.yaml up -d --build
+services:
+  lastcall:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file: server.env
+    volumes:
+      - ../data:/data          # database lives on the server's disk, survives restarts/updates
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    env_file: server.env       # uses DOMAIN
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data       # HTTPS certificates
+      - caddy_config:/config
+    depends_on:
+      - lastcall
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

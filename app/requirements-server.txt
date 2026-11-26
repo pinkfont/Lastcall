@@ -1,0 +1,8 @@
+# What the server needs. No Playwright: the server never opens POLITEMall itself
+# (your laptop does the submission check and pushes the results).
+icalendar>=6.0
+requests>=2.31
+python-dotenv>=1.0
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
