@@ -39,8 +39,10 @@ TOOL_TO_KIND = {
     "discussions": "discussion",
 }
 
-# Module code at the start of LOCATION, e.g. "C207 Database Systems", "M0001F English ..."
-MODULE_RE = re.compile(r"^([A-Z]{1,2}\d{3,4}[A-Z]?)\s+(.*)$")
+# Module code at the start of LOCATION, e.g. "C207 Database Systems", "M0001F English ...".
+# Deliberately broad so other polytechnics' formats (e.g. "IT1001", "CDM1C01") match too.
+MODULE_RE = re.compile(r"^([A-Z]{1,4}\d{1,5}[A-Z0-9]*)\s+(.*)$")
+FALLBACK_CODE_LENGTH = 20
 
 URL_RE = re.compile(r"https?://\S+")
 # Prefer links that go straight to the work, over the generic "view event" link.
@@ -126,7 +128,9 @@ def _split_module(location: str) -> tuple[str, str]:
     match = MODULE_RE.match(location)
     if match:
         return match.group(1), match.group(2).strip()
-    return "", location
+    # Unrecognised format: show (a shortened) location rather than nothing.
+    code = location[:FALLBACK_CODE_LENGTH].strip() or "Other"
+    return code, location or "Other"
 
 
 def _pick_link(description: str) -> str | None:

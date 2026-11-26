@@ -32,7 +32,7 @@ KIND_LABEL = {
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="duetracker", description="POLITEMall deadline tracker")
+    parser = argparse.ArgumentParser(prog="duetracker", description="Lastcall: POLITEMall deadline tracker")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("login", help="sign in to POLITEMall so submissions can be detected")
     sub.add_parser("serve", help="run the REST API and scheduler")
@@ -114,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             verb = "Marked done" if args.command == "done" else "Unmarked"
             print(f"{verb}: {row['module_code']} {row['title']}")
             if args.command == "undo" and row["kind"] == "assignment":
-                print("(If POLITEMall shows a submission, the next sync will tick it again.)")
+                print("(Auto-done won't tick it again. Mark it done yourself when it's finished.)")
         return 0
     finally:
         store.close()
@@ -158,4 +158,4 @@ def _fmt(due_at: datetime, now: datetime) -> str:
         rel = f"in {left.days}d {left.seconds // 3600}h"
     else:
         rel = f"in {left.seconds // 3600}h {(left.seconds % 3600) // 60}m"
-    return f"{due_at:%a %d %b, %I:%M %p} ({rel})"
+    return f"{due_at:%a %d %b}, {due_at.hour % 12 or 12}:{due_at:%M %p} ({rel})"

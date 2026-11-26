@@ -277,3 +277,13 @@ def test_submitted_notification(world):
 def test_empty_due_list():
     now = datetime.now(SGT)
     assert due_list([], 7, SGT, now) == "📋 Nothing due in the next 7 days 🎉"
+
+
+# 9. Long names are shortened, and the bot says so
+def test_rename_says_when_shortened(world):
+    async def s(bot, tg):
+        await bot.handle_update(tap(OWNER, "rename:C999"))
+        await bot.handle_update(msg(OWNER, "Database Systems and Advanced Data Management"))
+        return tg.sent[-1]["text"], (await bot.api.modules())[0]["alias"]
+    text, alias = run(s, world)
+    assert "(shortened to 30 characters)" in text and len(alias) <= 30

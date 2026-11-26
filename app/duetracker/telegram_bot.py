@@ -1,6 +1,6 @@
-"""Telegram bot: a client of the duetracker REST API.
+"""Lastcall Telegram bot: a client of the Lastcall REST API.
 
-It talks to Telegram's Bot API directly (long polling) and to the duetracker API
+It talks to Telegram's Bot API directly (long polling) and to the Lastcall API
 over HTTP, exactly like any other client would, so it can later run on its own.
 
 Menu (buttons pinned under the chat, also in the "/" menu):
@@ -25,6 +25,23 @@ import httpx
 log = logging.getLogger("duetracker.bot")
 
 PICKER_LIMIT = 20
+MAX_MESSAGE = 3900  # Telegram's limit is 4096 characters; leave headroom
+
+
+def split_message(text: str, limit: int = MAX_MESSAGE) -> list[str]:
+    """Split on blank lines (between list items) so no HTML tag is cut in half."""
+    chunks, current = [], ""
+    for block in text.split("\n\n"):
+        candidate = f"{current}\n\n{block}" if current else block
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            current = block[:limit]
+    if current:
+        chunks.append(current)
+    return chunks or [""]
 
 # Menu button text -> action. Slash commands map to the same actions.
 BTN_DUE, BTN_DUE30, BTN_SYNC = "📋 Due", "📅 Due 30", "🔄 Sync"
@@ -62,7 +79,7 @@ HEADINGS = {
     "submitted": "✅ Submitted on POLITEMall",
 }
 HELP = (
-    "<b>duetracker</b>: your POLITEMall deadlines\n\n"
+    "<b>Lastcall</b>: your POLITEMall deadlines\n\n"
     "📋 <b>Due</b>: next 7 days  ·  📅 <b>Due 30</b>: next 30 days\n"
     "🔄 <b>Sync</b>: fetch from POLITEMall now, then show what's due\n"
     "🕘 <b>History</b>: completed and missed in the last 30 days\n"
@@ -77,6 +94,10 @@ EXPIRED_WARNING = ("⚠️ Your POLITEMall login has expired, so I can't see you
 
 # ---- thin HTTP clients ---------------------------------------------------------
 
+class TelegramRejected(RuntimeError):
+    """Telegram received the request but refused it (bad input), as opposed to a network error."""
+
+
 class TelegramAPI:
     def __init__(self, token: str, http: httpx.AsyncClient):
         self.base = f"https://api.telegram.org/bot{token}"
@@ -86,7 +107,7 @@ class TelegramAPI:
         resp = await self.http.post(f"{self.base}/{method}", json=params, timeout=60)
         data = resp.json()
         if not data.get("ok"):
-            raise RuntimeError(f"Telegram {method} failed: {data.get('description')}")
+            raise TelegramRejected(f"Telegram {method} failed: {data.get('description')}")
         return data["result"]
 
     async def get_updates(self, offset: int | None, timeout: int = 30):
@@ -191,6 +212,11 @@ def time_left(due_at: datetime, now: datetime) -> str:
     return f"in {hours}h {rem // 60}m"
 
 
+def fmt_when(dt: datetime) -> str:
+    """'Sun 29 Nov, 11:59 PM' / 'Fri 27 Nov, 2:49 PM'."""
+    return f"{dt:%a %d %b}, {dt.hour % 12 or 12}:{dt:%M %p}"
+
+
 def _due(item: dict, tz: ZoneInfo) -> datetime:
     return datetime.fromisoformat(item["due_at"]).astimezone(tz)
 
@@ -205,28 +231,30 @@ def due_list(items: list[dict], days: int, tz: ZoneInfo, now: datetime) -> str:
     blocks = [f"📋 <b>Due in the next {days} days ({len(items)})</b>"]
     for item in items:
         due = _due(item, tz)
-        blocks.append(f"{_name(item)}\n{due:%a %d %b, %I:%M %p} · {time_left(due, now)}")
+        blocks.append(f"{_name(item)}\n{fmt_when(due)} · {time_left(due, now)}")
     return "\n\n".join(blocks)
 
 
 def history_list(items: list[dict], tz: ZoneInfo) -> str:
     if not items:
         return "🕘 Nothing completed or missed in the last 30 days."
-    lines = ["🕘 <b>Last 30 days</b>"]
+    lines = ["🕘 <b>Last 30 days</b>\n✅ done · ❌ not submitted · ⚪ not tracked (mark it yourself)"]
     for item in items:
         due = _due(item, tz)
         if item["done"]:
             how = "auto" if item.get("done_source") == "auto" else "manual"
             lines.append(f"✅ {_name(item)} ({how})\n      due {due:%a %d %b}")
-        else:
+        elif item.get("kind") == "assignment":
             lines.append(f"❌ {_name(item)} (incomplete)\n      was due {due:%a %d %b}")
+        else:  # quizzes, e-learning, peer evaluations aren't auto-checked yet
+            lines.append(f"⚪ {_name(item)} (not tracked)\n      was due {due:%a %d %b}")
     return "\n\n".join(lines)
 
 
 def reminder_text(heading: str, item: dict, tz: ZoneInfo, now: datetime) -> str:
     due = _due(item, tz)
     return (f"<b>{html.escape(heading)}</b>\n{_name(item)}\n"
-            f"{due:%a %d %b, %I:%M %p} · {time_left(due, now)}")
+            f"{fmt_when(due)} · {time_left(due, now)}")
 
 
 def link_button(item: dict):
@@ -264,6 +292,12 @@ class Bot:
 
     def now(self) -> datetime:
         return datetime.now(self.tz)
+
+    async def send_long(self, chat_id: int, text: str, markup=None) -> None:
+        """Send a list that may be longer than one Telegram message."""
+        chunks = split_message(text)
+        for i, chunk in enumerate(chunks):
+            await self.tg.send(chat_id, chunk, markup if i == len(chunks) - 1 else None)
 
     async def load_owner(self) -> None:
         self.owner = await self.api.owner()
@@ -307,13 +341,13 @@ class Bot:
         self.renaming = None  # any menu action cancels a pending rename
 
         if action == "due":
-            await self.tg.send(chat_id, due_list(await self.api.deliverables(7), 7, self.tz, self.now()), MENU)
+            await self.send_long(chat_id, due_list(await self.api.deliverables(7), 7, self.tz, self.now()), MENU)
         elif action == "due30":
-            await self.tg.send(chat_id, due_list(await self.api.deliverables(30), 30, self.tz, self.now()), MENU)
+            await self.send_long(chat_id, due_list(await self.api.deliverables(30), 30, self.tz, self.now()), MENU)
         elif action == "sync":
             await self._sync(chat_id)
         elif action == "history":
-            await self.tg.send(chat_id, history_list(await self.api.history(30), self.tz), MENU)
+            await self.send_long(chat_id, history_list(await self.api.history(30), self.tz), MENU)
         elif action == "complete":
             await self._show_picker(chat_id, "complete")
         elif action == "undo":
@@ -344,7 +378,7 @@ class Bot:
             notes.append("Submissions aren't checked yet: double-click <b>login</b> on your laptop.")
         header = "✔️ Synced." + ("\n" + "\n".join(notes) if notes else "")
         await self.tg.edit(chat_id, status_msg["message_id"], header)
-        await self.tg.send(chat_id, due_list(await self.api.deliverables(7), 7, self.tz, self.now()), MENU)
+        await self.send_long(chat_id, due_list(await self.api.deliverables(7), 7, self.tz, self.now()), MENU)
 
     async def _show_picker(self, chat_id: int, kind: str) -> None:
         if kind == "complete":
@@ -378,10 +412,12 @@ class Bot:
             await self.api.reset_name(code)
             await self.tg.send(chat_id, f"↩️ <b>{html.escape(code)}</b> is back to its original code.", MENU)
             return
-        name = " ".join(text.split())[:30]
+        full = " ".join(text.split())
+        name = full[:30].rstrip()
         await self.api.rename(code, name)
+        note = " (shortened to 30 characters)" if len(full) > 30 else ""
         await self.tg.send(chat_id, f"✏️ <b>{html.escape(code)}</b> will now show as "
-                                    f"<b>{html.escape(name)}</b>.", MENU)
+                                    f"<b>{html.escape(name)}</b>{note}.", MENU)
 
     async def _on_button(self, query: dict) -> None:
         chat_id = query["message"]["chat"]["id"]
@@ -443,25 +479,43 @@ class Bot:
         sent = 0
         for note in await self.api.notifications():
             item = note["deliverable"]
-            await self.tg.send(self.owner, reminder_text(notification_heading(note["kind"]), item,
-                                                         self.tz, self.now()),
-                               link_button(item))
+            text = reminder_text(notification_heading(note["kind"]), item, self.tz, self.now())
+            try:
+                await self.tg.send(self.owner, text, link_button(item))
+            except TelegramRejected as exc:
+                # Telegram refused this message (e.g. an odd link). Try once without
+                # the button; if that fails too, skip it so later alerts still arrive.
+                log.warning("alert %s rejected (%s); retrying without button", note["id"], exc)
+                try:
+                    await self.tg.send(self.owner, text)
+                except TelegramRejected as exc2:
+                    log.warning("alert %s skipped: %s", note["id"], exc2)
+                    await self.api.ack(note["id"])
+                    continue
+            # Network problems raise other errors: nothing is acked, so it's retried later.
             await self.api.ack(note["id"])
             sent += 1
         return sent
 
     # -- loops --
 
+    async def _handle_safely(self, update: dict) -> None:
+        try:
+            await self.handle_update(update)
+        except Exception as exc:
+            log.warning("error handling update: %s", exc)
+
     async def poll_loop(self) -> None:
         offset = None
+        running: set[asyncio.Task] = set()
         while True:
             try:
                 for update in await self.tg.get_updates(offset):
                     offset = update["update_id"] + 1
-                    try:
-                        await self.handle_update(update)
-                    except Exception as exc:
-                        log.warning("error handling update: %s", exc)
+                    # Each message runs on its own, so a slow Sync doesn't block other taps.
+                    task = asyncio.create_task(self._handle_safely(update))
+                    running.add(task)
+                    task.add_done_callback(running.discard)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

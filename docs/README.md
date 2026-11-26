@@ -1,8 +1,10 @@
-# duetracker
+# Lastcall
+
+**Never miss a POLITEMall deadline.**
 
 A deadline tracker for Singapore polytechnic students. It pulls your deliverables
 straight from **POLITEMall** (Brightspace) so you never have to check each module
-page for what's due.
+page for what's due. (In the code, the Python package and folder are named `duetracker`.)
 
 ```
 $ python -m duetracker due
@@ -46,7 +48,7 @@ POLITEMall calendar feed (.ics)
 
 The calendar feed says what's due but not whether you've handed it in. Students
 can't get official Brightspace API keys, but the POLITEMall site calls the same
-REST API (`/d2l/api/...`) with your logged-in session, so duetracker does too:
+REST API (`/d2l/api/...`) with your logged-in session, so Lastcall does too:
 
 - `login` opens a real browser; you sign in yourself (2FA included). Only the
   session cookies are saved locally (`.session/`, git-ignored). No password is stored.
@@ -55,6 +57,8 @@ REST API (`/d2l/api/...`) with your logged-in session, so duetracker does too:
   assignment and ticks it off if a submission exists (`done_source = 'auto'`).
 - Folder IDs come from the feed's submission links; for links without one, the
   assignment is matched by name within its course.
+- Assignments from the last 30 days are checked (matching History). If you undo an
+  auto-tick, it stays undone.
 - If the session expires, deadlines keep syncing from the feed and you're told to
   log in again. Requests are GET-only, few per sync, and paced.
 
@@ -119,11 +123,14 @@ Menu buttons are pinned under the chat (and in Telegram's `/` menu):
 |---|---|
 | 📋 Due · 📅 Due 30 | Clean list for the next 7 / 30 days |
 | 🔄 Sync | Fetch from POLITEMall (and check submissions), then show the fresh list |
-| 🕘 History | Last 30 days: ✅ completed (auto / manual) and ❌ missed |
+| 🕘 History | Last 30 days: ✅ done (auto / manual) · ❌ not submitted · ⚪ not tracked (quizzes etc.) |
 | ✅ Mark complete · ↩️ Undo mark | Pick an item from a short list |
 | ✏️ Rename module | Show "Database" instead of "C207" everywhere |
 
 - Lists stay text-only; buttons appear only where you're choosing something
+- Each message is handled independently, so a slow Sync never freezes the bot; long
+  lists are split to fit Telegram's message limit
+- One undeliverable alert never blocks the rest; network failures are retried later
 - Alerts (8 AM 3 days before / day before / on the day, plus new, moved and
   ✅ submitted deadlines) carry a single 🔗 Open-in-POLITEMall button
 - **Private:** the first chat to send `/start` becomes the owner; everyone else is

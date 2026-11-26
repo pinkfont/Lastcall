@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -119,8 +120,24 @@ def create_app(settings: Settings | None = None, run_scheduler: bool = True,
             raise HTTPException(status_code=401, detail="Missing or wrong X-API-Key")
 
     status = {"last_sync": None, "submission_check": "off"}
+    sync_lock = threading.Lock()
+    last_result: dict[str, SyncOut | None] = {"value": None}
 
     def sync_once() -> SyncOut:
+        """Run one sync. If one is already running (e.g. the scheduler's), wait for it
+        and return its result instead of checking POLITEMall twice at the same time."""
+        if not sync_lock.acquire(blocking=False):
+            with sync_lock:
+                if last_result["value"] is not None:
+                    return last_result["value"]
+            sync_lock.acquire()
+        try:
+            last_result["value"] = _sync_now()
+            return last_result["value"]
+        finally:
+            sync_lock.release()
+
+    def _sync_now() -> SyncOut:
         """Feed sync, then (if logged in on this machine) the POLITEMall submission check."""
         store = Store(settings.db_path)
         try:
@@ -163,7 +180,7 @@ def create_app(settings: Settings | None = None, run_scheduler: bool = True,
         for task in tasks:
             task.cancel()
 
-    app = FastAPI(title="duetracker API", version="0.2.0", lifespan=lifespan,
+    app = FastAPI(title="Lastcall API", version="0.2.0", lifespan=lifespan,
                   description="Deadlines from POLITEMall, for the Telegram bot and web app.")
     protected = [Depends(auth)]
 

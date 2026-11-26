@@ -195,10 +195,11 @@ class Store:
 
     def set_done(self, user_id: int, item_id: int, done: bool = True,
                  source: str = "manual") -> sqlite3.Row | None:
+        # An undo is remembered as 'user_undo' so the auto-check won't tick it again.
         with self.conn:
             cur = self.conn.execute(
                 "UPDATE deliverables SET done = ?, done_at = ?, done_source = ? WHERE user_id = ? AND id = ?",
-                (int(done), _now() if done else None, source if done else None, user_id, item_id),
+                (int(done), _now() if done else None, source if done else "user_undo", user_id, item_id),
             )
         if cur.rowcount == 0:
             return None
@@ -210,6 +211,7 @@ class Store:
         return self.conn.execute(
             """SELECT * FROM deliverables
                WHERE user_id = ? AND kind = 'assignment' AND done = 0 AND removed = 0
+                 AND COALESCE(done_source, '') != 'user_undo'
                  AND due_at >= ?
                ORDER BY due_at""",
             (user_id, since.isoformat()),
@@ -234,7 +236,7 @@ class Store:
         with self.conn:
             for uid in uids:
                 row = self.get_by_uid(user_id, uid)
-                if row is None or row["done"]:
+                if row is None or row["done"] or row["done_source"] == "user_undo":
                     continue
                 self.conn.execute(
                     "UPDATE deliverables SET done = 1, done_at = ?, done_source = ? WHERE id = ?",
@@ -339,7 +341,7 @@ class Store:
         """Modules with something due since `since` (i.e. this semester's, not old ones)."""
         return self.conn.execute(
             """SELECT module_code, MAX(module_name) AS module_name FROM deliverables
-               WHERE user_id = ? AND module_code != '' AND due_at >= ?
+               WHERE user_id = ? AND due_at >= ?
                GROUP BY module_code ORDER BY module_code""",
             (user_id, since.isoformat()),
         ).fetchall()

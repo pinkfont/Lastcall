@@ -12,8 +12,9 @@ from .fetcher import fetch_feed
 from .parser import parse_feed
 from .politemall_api import ids_from_link
 
-# Also check assignments that went overdue recently, in case of late submissions.
-LOOKBACK = timedelta(days=7)
+# Check the same window History shows (30 days), so past work that was submitted
+# isn't listed as incomplete just because it was never checked.
+LOOKBACK = timedelta(days=30)
 
 
 def sync_user(store: Store, user_id: int, feed_source: str, tz: str,

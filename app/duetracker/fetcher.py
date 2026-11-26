@@ -26,7 +26,7 @@ def fetch_feed(source: str) -> str:
             resp = requests.get(
                 source,
                 timeout=TIMEOUT_SECONDS,
-                headers={"User-Agent": "duetracker/0.1 (personal deadline tracker)"},
+                headers={"User-Agent": "Lastcall/0.1 (personal deadline tracker)"},
             )
         except requests.RequestException as exc:
             raise FeedError(f"Could not reach {mask_url(source)}: {exc.__class__.__name__}") from None
