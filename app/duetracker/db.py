@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS users (
     name        TEXT NOT NULL,
     feed_source TEXT NOT NULL,
     timezone    TEXT NOT NULL DEFAULT 'Asia/Singapore',
+    telegram_chat_id INTEGER,           -- the only Telegram chat the bot answers
     created_at  TEXT NOT NULL
 );
 
@@ -71,6 +72,10 @@ class Store:
 
     def _migrate(self) -> None:
         """Upgrade databases created by older versions in place."""
+        user_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(users)")}
+        if "telegram_chat_id" not in user_cols:
+            self.conn.execute("ALTER TABLE users ADD COLUMN telegram_chat_id INTEGER")
+            self.conn.commit()
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(deliverables)")}
         if "done_source" not in cols:
             self.conn.execute("ALTER TABLE deliverables ADD COLUMN done_source TEXT")
@@ -97,6 +102,19 @@ class Store:
         )
         self.conn.commit()
         return cur.lastrowid
+
+    def telegram_owner(self, user_id: int) -> int | None:
+        row = self.conn.execute("SELECT telegram_chat_id FROM users WHERE id = ?", (user_id,)).fetchone()
+        return row["telegram_chat_id"] if row else None
+
+    def claim_telegram_owner(self, user_id: int, chat_id: int) -> bool:
+        """First come, first served: only succeeds if no owner is set yet."""
+        with self.conn:
+            cur = self.conn.execute(
+                "UPDATE users SET telegram_chat_id = ? WHERE id = ? AND telegram_chat_id IS NULL",
+                (chat_id, user_id),
+            )
+        return cur.rowcount == 1
 
     # ---- sync --------------------------------------------------------------
 
@@ -214,6 +232,9 @@ class Store:
                     "UPDATE deliverables SET done = 1, done_at = ?, done_source = ? WHERE id = ?",
                     (_now(), source, row["id"]),
                 )
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO notifications (user_id, deliverable_id, kind, created_at)
+                       VALUES (?, ?, 'submitted', ?)""", (user_id, row["id"], _now()))
                 changed.append(row)
         return changed
 

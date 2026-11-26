@@ -120,3 +120,30 @@ def test_refuses_to_start_without_api_key(tmp_path):
                  politemall_url="https://x", session_dir=".s", api_key="")
     with pytest.raises(SystemExit):
         create_app(s, run_scheduler=False)
+
+
+def test_sync_reports_submission_check_when_not_logged_in(env):
+    client, *_ = env
+    r = client.post("/sync", headers=H).json()
+    assert r["submission_check"] == "not_logged_in" and r["submitted"] == 0
+    assert client.get("/status", headers=H).json()["submission_check"] == "not_logged_in"
+
+
+def test_sync_ticks_off_submitted_work_and_alerts(env, monkeypatch):
+    """Simulate POLITEMall saying 'Next week' (u2) was submitted."""
+    import duetracker.api as api_mod
+    from duetracker.service import AutoDoneResult
+
+    def fake_auto_done(store, user_id, base_url, session_dir, now):
+        row = store.get_by_uid(user_id, "u2")
+        store.mark_done_by_uids(user_id, ["u2"])
+        return AutoDoneResult(marked=[f"{row['module_code']} {row['title']}"], checked=2)
+
+    monkeypatch.setattr(api_mod, "auto_done", fake_auto_done)
+    client, *_ = env
+    r = client.post("/sync", headers=H).json()
+    assert (r["submitted"], r["submission_check"]) == (1, "ok")
+    titles = [d["title"] for d in client.get("/deliverables?days=30", headers=H).json()]
+    assert "Next week" not in titles
+    kinds = {(n["kind"], n["deliverable"]["title"]) for n in client.get("/notifications", headers=H).json()}
+    assert ("submitted", "Next week") in kinds

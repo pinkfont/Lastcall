@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from .config import Settings, load_settings
 from .db import Store
 from .fetcher import FeedError
-from .service import run_sync_job
+from .service import auto_done, run_sync_job
 
 log = logging.getLogger("duetracker.api")
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -54,6 +54,17 @@ class SyncOut(BaseModel):
     rescheduled: int
     removed: int
     reminders: int
+    submitted: int = 0             # assignments newly ticked off from POLITEMall
+    submission_check: str = "off"  # ok | not_logged_in | expired | error | off
+
+
+class StatusOut(BaseModel):
+    last_sync: datetime | None
+    submission_check: str
+
+
+class OwnerIn(BaseModel):
+    chat_id: int
 
 
 class SubmissionsIn(BaseModel):
@@ -74,10 +85,11 @@ def _deliverable(row) -> DeliverableOut:
 
 # ---- app factory -----------------------------------------------------------------
 
-def create_app(settings: Settings | None = None, run_scheduler: bool = True) -> FastAPI:
+def create_app(settings: Settings | None = None, run_scheduler: bool = True,
+               check_submissions: bool = True) -> FastAPI:
     settings = settings or load_settings()
     if not settings.api_key:
-        raise SystemExit("Set API_KEY in .env before starting the API (any long random string).")
+        raise SystemExit("Set API_KEY in config/.env before starting the API (any long random string).")
     tz = ZoneInfo(settings.timezone)
 
     def store_dep():
@@ -94,13 +106,24 @@ def create_app(settings: Settings | None = None, run_scheduler: bool = True) -> 
         if not key or not secrets.compare_digest(key, settings.api_key):
             raise HTTPException(status_code=401, detail="Missing or wrong X-API-Key")
 
+    status = {"last_sync": None, "submission_check": "off"}
+
     def sync_once() -> SyncOut:
+        """Feed sync, then (if logged in on this machine) the POLITEMall submission check."""
         store = Store(settings.db_path)
         try:
             user_id = store.ensure_user(settings.user_name, settings.feed_source, settings.timezone)
-            r = run_sync_job(store, user_id, settings.feed_source, settings.timezone)
-            return SyncOut(in_feed=r.in_feed, new=r.new, rescheduled=r.rescheduled,
-                           removed=r.removed, reminders=r.reminders)
+            now = datetime.now(tz)
+            r = run_sync_job(store, user_id, settings.feed_source, settings.timezone, now)
+            out = SyncOut(in_feed=r.in_feed, new=r.new, rescheduled=r.rescheduled,
+                          removed=r.removed, reminders=r.reminders)
+            if check_submissions:
+                a = auto_done(store, user_id, settings.politemall_url, settings.session_dir, now)
+                out.submitted, out.submission_check = len(a.marked), a.status
+                if a.status == "error":
+                    log.warning("submission check failed: %s", a.error)
+            status["last_sync"], status["submission_check"] = now, out.submission_check
+            return out
         finally:
             store.close()
 
@@ -116,9 +139,16 @@ def create_app(settings: Settings | None = None, run_scheduler: bool = True) -> 
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        task = asyncio.create_task(scheduler()) if run_scheduler else None
+        tasks = []
+        if run_scheduler:
+            tasks.append(asyncio.create_task(scheduler()))
+            if settings.telegram_bot_token:
+                from .telegram_bot import run_bot
+                tasks.append(asyncio.create_task(run_bot(
+                    settings.telegram_bot_token, f"http://127.0.0.1:{settings.port}",
+                    settings.api_key, settings.timezone, settings.notify_interval_seconds)))
         yield
-        if task:
+        for task in tasks:
             task.cancel()
 
     app = FastAPI(title="duetracker API", version="0.2.0", lifespan=lifespan,
@@ -182,5 +212,23 @@ def create_app(settings: Settings | None = None, run_scheduler: bool = True) -> 
         if not store.ack_notification(user_id, notification_id):
             raise HTTPException(404, "No such pending notification")
         return {"acked": notification_id}
+
+    @app.get("/status", response_model=StatusOut, dependencies=protected)
+    def get_status():
+        """Last sync time and whether the POLITEMall submission check is working."""
+        return StatusOut(**status)
+
+    @app.get("/telegram/owner", dependencies=protected)
+    def telegram_owner(store: Store = Depends(store_dep), user_id: int = Depends(user_dep)):
+        return {"chat_id": store.telegram_owner(user_id)}
+
+    @app.post("/telegram/owner", dependencies=protected)
+    def claim_owner(body: OwnerIn, store: Store = Depends(store_dep), user_id: int = Depends(user_dep)):
+        """Lock the bot to the first chat that sends /start."""
+        if store.claim_telegram_owner(user_id, body.chat_id):
+            return {"chat_id": body.chat_id}
+        if store.telegram_owner(user_id) == body.chat_id:
+            return {"chat_id": body.chat_id}
+        raise HTTPException(409, "This bot already belongs to someone else")
 
     return app

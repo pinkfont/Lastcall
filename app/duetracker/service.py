@@ -33,6 +33,8 @@ class AutoDoneResult:
     marked: list[str] = field(default_factory=list)  # "C207 Week 6 Deliverables"
     checked: int = 0
     unknown: int = 0  # couldn't tell (no ids found, or no access)
+    status: str = "ok"  # ok | not_logged_in | expired | error
+    error: str = ""
 
 
 def check_submissions(store: Store, user_id: int, client: SubmissionSource,
@@ -53,8 +55,25 @@ def check_submissions(store: Store, user_id: int, client: SubmissionSource,
             result.unknown += 1
         elif submitted:
             store.set_done(user_id, row["id"], done=True, source="auto")
+            store.add_notification(user_id, row["id"], "submitted")
             result.marked.append(f"{row['module_code']} {row['title']}")
     return result
+
+
+def auto_done(store: Store, user_id: int, base_url: str, session_dir: str,
+              now: datetime) -> AutoDoneResult:
+    """Run the POLITEMall submission check if a login session exists. Never raises."""
+    from .politemall_api import NotLoggedIn, SessionExpired, SubmissionClient
+
+    try:
+        with SubmissionClient(base_url, session_dir) as client:
+            return check_submissions(store, user_id, client, now)
+    except NotLoggedIn:
+        return AutoDoneResult(status="not_logged_in")
+    except SessionExpired:
+        return AutoDoneResult(status="expired")
+    except Exception as exc:
+        return AutoDoneResult(status="error", error=f"{exc.__class__.__name__}: {exc}")
 
 
 @dataclass

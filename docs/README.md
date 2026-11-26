@@ -36,7 +36,8 @@ POLITEMall calendar feed (.ics)
         ▼
   api.py (FastAPI)     REST API + background scheduler (sync every 2h)
         ▼
-  Telegram bot · web app (planned)        cli.py for local use
+  telegram_bot.py      /due · /done · ✅ buttons · reminders     (web app: planned)
+  cli.py               local use
 
  politemall_api.py     your own login session → "has this been submitted?"
 ```
@@ -49,7 +50,7 @@ REST API (`/d2l/api/...`) with your logged-in session, so duetracker does too:
 
 - `login` opens a real browser; you sign in yourself (2FA included). Only the
   session cookies are saved locally (`.session/`, git-ignored). No password is stored.
-- On each `sync`, a headless browser asks
+- On each sync (the scheduler's, `/sync` in Telegram, or `due`), a headless browser asks
   `/dropbox/folders/{folderId}/submissions/mysubmissions/` for each upcoming
   assignment and ticks it off if a submission exists (`done_source = 'auto'`).
 - Folder IDs come from the feed's submission links; for links without one, the
@@ -96,29 +97,60 @@ message, not three), reminders stop once an item is done, and they're re-planned
 lecturer moves the deadline. The first sync doesn't send "new deadline" alerts for
 everything already in the feed.
 
+When the API runs on the machine where you logged in, the scheduled sync checks
+submissions too, and the bot warns you once if the POLITEMall login has expired
+(`GET /status`).
+
 **Hybrid deployment.** The API can run on a server 24/7, but POLITEMall's sign-in
 (with 2FA) needs a real screen. So submission checks run on your laptop during `sync`
 and are pushed to the server's `/submissions` endpoint when `API_URL` is set.
 
+## Telegram bot
+
+A client of the REST API, using Telegram's Bot API directly (long polling, no extra
+framework). It starts automatically with `serve` when `TELEGRAM_BOT_TOKEN` is set.
+
+- `/due`, `/due 30`: list with 🔗 open-submission and ✅ done buttons
+- `/done 115`, `/undo 115`, `/sync`, `/help`
+- Delivers reminders, "new / moved deadline" and "✅ submitted on POLITEMall" alerts from `/notifications`,
+  acknowledging each one so nothing is sent twice
+- **Private:** the first chat to send `/start` becomes the owner (stored in the DB);
+  everyone else is refused
+
+Create a bot with [@BotFather](https://t.me/BotFather) and put its token in `config/.env`.
+
+## Project layout
+
+```
+setup.bat  login.bat  due.bat  serve.bat   double-click commands (Windows)
+app/       duetracker/ (code) · tests/ · requirements.txt · .venv/
+config/    .env (your settings, git-ignored) · .env.example
+data/      database, saved POLITEMall login, debug logs (git-ignored)
+docs/      this README
+```
+
 ## Setup
 
 ```bash
-pip install -r requirements.txt
-cp .env.example .env
+pip install -r app/requirements.txt
+cp config/.env.example config/.env
 ```
 
 Get your feed link: **POLITEMall → Calendar → Subscribe → "All Calendars and Tasks"**,
-then paste it into `.env` as `FEED_URL`.
+then paste it into `config/.env` as `FEED_URL`.
 
 > The link contains a private token. Anyone with it can read your calendar.
-> Keep it in `.env` (git-ignored), and press **Reset** in POLITEMall if it ever leaks.
+> Keep it in `config/.env` (git-ignored), and press **Reset** in POLITEMall if it ever leaks.
 
 ## Usage
 
 On Windows you can just double-click `setup.bat` once, `login.bat` once, then `due.bat`.
 `serve.bat` runs the API locally.
 
+Run the Python commands from inside `app/`:
+
 ```bash
+cd app
 python -m duetracker login             # one-time sign-in for automatic "done" detection
 python -m duetracker sync              # fetch the feed, show what's new or changed
 python -m duetracker due               # next 7 days
@@ -132,6 +164,7 @@ python -m duetracker serve             # REST API + scheduler
 ## Tests
 
 ```bash
+cd app
 python -m pytest
 ```
 
@@ -147,7 +180,7 @@ above. No real student data is committed.
 - [ ] Same for quizzes and e-learning
 - [x] REST API (FastAPI) with API-key auth
 - [x] Scheduled sync + reminder planning (3 days, 1 day, morning of)
-- [ ] Telegram bot (`/due`, `/done`, new-deliverable alerts)
+- [x] Telegram bot (`/due`, `/done`, buttons, reminders, new/moved-deadline alerts)
 - [ ] Web app dashboard
 - [ ] Deployment (API 24/7, laptop pushes submission checks)
 - [ ] Multi-user onboarding (paste your own feed link)

@@ -1,10 +1,12 @@
 # secrets
+config/.env
 .env
 
-# personal data: real feeds and the database
-*.ics
-!tests/sample_feed.ics
+# personal data: database, saved POLITEMall login, debug logs, real feeds
+data/
 *.db
+*.ics
+!app/tests/sample_feed.ics
 
 # python
 __pycache__/
@@ -12,7 +14,3 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
-last_response_debug.txt
-
-# saved POLITEMall login session
-.session/

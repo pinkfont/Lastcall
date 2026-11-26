@@ -33,7 +33,7 @@ def fetch_feed(source: str) -> str:
         if resp.status_code != 200:
             raise FeedError(
                 f"Feed returned HTTP {resp.status_code} for {mask_url(source)}. "
-                "If you pressed Reset in POLITEMall, update FEED_URL in .env."
+                "If you pressed Reset in POLITEMall, update FEED_URL in config/.env."
             )
         text = resp.text
     else:
@@ -49,18 +49,21 @@ def fetch_feed(source: str) -> str:
             if "<html" in text[:2000].lower():
                 hint = (" POLITEMall sent back a web page (usually the login page), which normally "
                         "means the feed token is no longer valid. Copy a fresh link from "
-                        "Calendar > Subscribe into FEED_URL in .env.")
-            hint += f" Details saved to {DEBUG_FILE}."
+                        "Calendar > Subscribe into FEED_URL in config/.env.")
+            hint += f" Details saved to data/{DEBUG_FILE.name}."
         raise FeedError("That doesn't look like a calendar feed (no BEGIN:VCALENDAR)." + hint)
     return text
 
 
-DEBUG_FILE = "last_response_debug.txt"
+from .paths import DATA_DIR  # noqa: E402
+
+DEBUG_FILE = DATA_DIR / "last_response_debug.txt"
 
 
 def _save_debug(resp, text: str) -> None:
     """Keep what the server returned (token masked) so a failed sync can be diagnosed."""
     try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
         Path(DEBUG_FILE).write_text(
             f"final url: {mask_url(resp.url)}\n"
             f"status: {resp.status_code}\n"

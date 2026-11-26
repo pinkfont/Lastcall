@@ -8,6 +8,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .paths import CONFIG_DIR, DATA_DIR, data_path
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -22,31 +24,36 @@ class Settings:
     sync_interval_minutes: int = 120
     host: str = "127.0.0.1"
     port: int = 8000
+    telegram_bot_token: str = ""
+    notify_interval_seconds: int = 60
 
 
 def load_settings() -> Settings:
-    # .env in the current folder first, then next to the project. Real environment
+    # config/.env first, then a .env in the current folder. Real environment
     # variables (as set on a hosting platform) always win over both.
+    load_dotenv(CONFIG_DIR / ".env")
     load_dotenv(Path.cwd() / ".env")
-    load_dotenv()
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     feed = os.getenv("FEED_URL") or os.getenv("FEED_FILE")
     if not feed:
         raise SystemExit(
-            "No feed configured. Copy .env.example to .env and set FEED_URL "
+            "No feed configured. Copy config/.env.example to config/.env and set FEED_URL "
             "(POLITEMall > Calendar > Subscribe > All Calendars and Tasks)."
         )
     return Settings(
         feed_source=feed.strip(),
-        db_path=os.getenv("DB_PATH", "duetracker.db"),
+        db_path=str(data_path(os.getenv("DB_PATH", "duetracker.db"))),
         user_name=os.getenv("USER_NAME", "me"),
         timezone=os.getenv("TIMEZONE", "Asia/Singapore"),
         politemall_url=os.getenv("POLITEMALL_URL") or _base_url(feed.strip()),
-        session_dir=os.getenv("SESSION_DIR", ".session"),
+        session_dir=str(data_path(os.getenv("SESSION_DIR", ".session"))),
         api_key=os.getenv("API_KEY", "").strip(),
         api_url=os.getenv("API_URL", "").strip().rstrip("/"),
         sync_interval_minutes=int(os.getenv("SYNC_INTERVAL_MINUTES", "120")),
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "8000")),
+        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+        notify_interval_seconds=int(os.getenv("NOTIFY_INTERVAL_SECONDS", "60")),
     )
 
 

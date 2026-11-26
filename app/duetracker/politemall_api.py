@@ -65,12 +65,44 @@ def _launch(playwright, **kwargs):
     ) from last_error
 
 
+from .paths import DATA_DIR  # noqa: E402
+
+LOGIN_LOG = DATA_DIR / "login_debug.txt"
+
+FETCH_JS = """async (url) => {
+    try {
+        const r = await fetch(url, {credentials: "include", redirect: "manual"});
+        return {status: r.status, type: r.headers.get("content-type") || "", text: await r.text()};
+    } catch (e) {
+        return {status: -1, type: "", text: String(e)};
+    }
+}"""
+
+
+def _page_get(page, path: str) -> dict:
+    """GET an API path from inside the page, exactly like POLITEMall's own scripts do."""
+    return page.evaluate(FETCH_JS, path)
+
+
+def _whoami_ok(page) -> tuple[bool, str]:
+    versions = _page_get(page, "/d2l/api/versions/")
+    if versions["status"] != 200 or "json" not in versions["type"]:
+        return False, f"versions -> {versions['status']} {versions['type'][:30]}"
+    lp = next((v["LatestVersion"] for v in json.loads(versions["text"]) if v.get("ProductCode") == "lp"), None)
+    who = _page_get(page, f"/d2l/api/lp/{lp}/users/whoami")
+    ok = who["status"] == 200 and "json" in who["type"]
+    return ok, f"whoami(lp {lp}) -> {who['status']} {who['type'][:30]}"
+
+
 def login(base_url: str, session_dir: str | Path) -> None:
     """Open a visible browser, let the user sign in, then save the session."""
     from playwright.sync_api import sync_playwright
 
     session_dir = Path(session_dir)
     session_dir.mkdir(parents=True, exist_ok=True)
+    host = urlsplit(base_url).netloc
+    LOGIN_LOG.parent.mkdir(parents=True, exist_ok=True)
+    log = open(LOGIN_LOG, "w", encoding="utf-8")
     with sync_playwright() as p:
         browser = _launch(p, headless=False)
         context = browser.new_context()
@@ -78,29 +110,30 @@ def login(base_url: str, session_dir: str | Path) -> None:
         page.goto(f"{base_url}/d2l/home")
         print("A browser window has opened. Sign in to POLITEMall there.")
         print("It will close by itself once you're signed in.")
-        # Don't rely on the page URL or on the page going quiet (Brightspace keeps
-        # loading in the background). Ask the API directly whether we're signed in.
         deadline = time.monotonic() + LOGIN_TIMEOUT_MS / 1000
-        while time.monotonic() < deadline:
-            if _signed_in(context, base_url):
-                context.storage_state(path=str(session_dir / "state.json"))
-                browser.close()
-                return
-            page.wait_for_timeout(2000)
-        browser.close()
-        raise TimeoutError("Didn't detect a sign-in within 5 minutes. Run login again.")
-
-
-def _signed_in(context, base_url: str) -> bool:
-    try:
-        resp = context.request.get(f"{base_url}/d2l/api/versions/", max_redirects=0)
-        if not resp.ok:
-            return False
-        lp = next(v["LatestVersion"] for v in json.loads(resp.text()) if v.get("ProductCode") == "lp")
-        who = context.request.get(f"{base_url}/d2l/api/lp/{lp}/users/whoami", max_redirects=0)
-        return who.ok and "json" in who.headers.get("content-type", "")
-    except Exception:
-        return False
+        try:
+            while time.monotonic() < deadline:
+                page.wait_for_timeout(2000)
+                # Use whichever tab is currently on POLITEMall (sign-in may open new ones).
+                pm_pages = [pg for pg in context.pages if urlsplit(pg.url).netloc == host]
+                if not pm_pages:
+                    log.write(f"waiting: no tab on {host} yet\n")
+                    continue
+                pg = pm_pages[-1]
+                try:
+                    ok, detail = _whoami_ok(pg)
+                except Exception as exc:  # page navigating mid-check
+                    ok, detail = False, f"check error: {exc.__class__.__name__}"
+                log.write(f"{urlsplit(pg.url).path}: {detail}\n")
+                log.flush()
+                if ok:
+                    context.storage_state(path=str(session_dir / "state.json"))
+                    print("Signed in detected.")
+                    return
+            raise TimeoutError(f"Didn't detect a sign-in within 5 minutes. Details in data/{LOGIN_LOG.name}.")
+        finally:
+            log.close()
+            browser.close()
 
 
 class SubmissionClient:
@@ -120,7 +153,10 @@ class SubmissionClient:
         self._pw = sync_playwright().start()
         self._browser = _launch(self._pw, headless=True)
         self._context = self._browser.new_context(storage_state=str(self.state_file))
+        self._page = self._context.new_page()
         try:
+            # A light same-origin page, so API calls run in POLITEMall's own origin.
+            self._page.goto(f"{self.base_url}/d2l/api/versions/")
             self._check_session()
         except Exception:
             self._browser.close()
@@ -141,15 +177,16 @@ class SubmissionClient:
 
     def _get(self, path: str):
         time.sleep(REQUEST_PAUSE_SECONDS)
-        resp = self._context.request.get(f"{self.base_url}{path}", max_redirects=0)
-        content_type = resp.headers.get("content-type", "")
-        if resp.status in (301, 302, 401) or "text/html" in content_type:
+        resp = _page_get(self._page, path)
+        status, content_type = resp["status"], resp["type"]
+        if status in (0, 301, 302, 401) or "text/html" in content_type:
+            # 0 = opaque redirect (to the login page)
             raise SessionExpired("POLITEMall session expired. Run login.bat again.")
-        if resp.status == 403 or resp.status == 404:
+        if status in (403, 404):
             return None  # not visible to you / doesn't exist
-        if not resp.ok:
-            raise RuntimeError(f"POLITEMall API returned HTTP {resp.status} for {path}")
-        return json.loads(resp.text())
+        if not 200 <= status < 300:
+            raise RuntimeError(f"POLITEMall API returned HTTP {status} for {path}")
+        return json.loads(resp["text"])
 
     def _check_session(self) -> None:
         versions = self._get("/d2l/api/versions/") or []

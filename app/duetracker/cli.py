@@ -18,8 +18,8 @@ from zoneinfo import ZoneInfo
 from .config import load_settings
 from .db import Store
 from .fetcher import FeedError
-from .politemall_api import NotLoggedIn, SessionExpired, SubmissionClient, login
-from .service import check_submissions, sync_user
+from .politemall_api import login
+from .service import auto_done, sync_user
 
 KIND_LABEL = {
     "assignment": "Assignment",
@@ -121,21 +121,17 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _auto_done(store, user_id, settings, now) -> None:
-    try:
-        with SubmissionClient(settings.politemall_url, settings.session_dir) as client:
-            result = check_submissions(store, user_id, client, now)
-    except NotLoggedIn:
+    result = auto_done(store, user_id, settings.politemall_url, settings.session_dir, now)
+    if result.status == "not_logged_in":
         print("\nTip: run login.bat once to tick off submitted assignments automatically.")
-        return
-    except SessionExpired:
+    elif result.status == "expired":
         print("\nPOLITEMall login expired: run login.bat again to keep auto-done working.")
-        return
-    except Exception as exc:  # never let this break the deadline list
-        print(f"\nCouldn't check submissions this time ({exc.__class__.__name__}: {exc}).")
-        return
-    print(f"\nChecked {result.checked} assignment(s) on POLITEMall.")
-    for title in result.marked:
-        print(f"  SUBMITTED  {title}  (ticked off automatically)")
+    elif result.status == "error":
+        print(f"\nCouldn't check submissions this time ({result.error}).")
+    else:
+        print(f"\nChecked {result.checked} assignment(s) on POLITEMall.")
+        for title in result.marked:
+            print(f"  SUBMITTED  {title}  (ticked off automatically)")
 
 
 def _push_auto_done(store, user_id, settings) -> None:

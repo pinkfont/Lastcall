@@ -1,14 +1,13 @@
 @echo off
-rem Double-click to fetch the latest from POLITEMall and show the next 14 days.
-cd /d "%~dp0"
-if not exist .venv (
+rem Fetch the latest from POLITEMall, tick off submitted work, show the next 14 days.
+cd /d "%~dp0app"
+if not exist .venv\Scripts\python.exe (
     echo Run setup.bat first.
     pause
     exit /b 1
 )
-call .venv\Scripts\activate.bat
-python -m duetracker sync
+.venv\Scripts\python.exe -m duetracker sync
 echo.
-python -m duetracker due --days 14
+.venv\Scripts\python.exe -m duetracker due --days 14
 echo.
 pause
