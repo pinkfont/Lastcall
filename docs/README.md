@@ -86,6 +86,9 @@ One backend for every client (Telegram bot, web app, CLI). Run it with
 | POST | `/deliverables/{id}/done` · `/undo` | Mark manually |
 | POST | `/sync` | Sync now (the scheduler also runs every `SYNC_INTERVAL_MINUTES`) |
 | POST | `/submissions` | Laptop reports submitted assignments by feed UID |
+| GET | `/history?days=30` | Completed, plus overdue items never done |
+| GET | `/pickers/complete` · `/pickers/undo` | Choices for the bot's pickers |
+| GET · PUT · DELETE | `/modules` · `/modules/{code}/alias` | List modules, rename, reset |
 | GET | `/notifications` | Pending alerts: new deadline, deadline moved, reminders |
 | POST | `/notifications/{id}/ack` | Mark an alert as delivered |
 
@@ -110,12 +113,21 @@ and are pushed to the server's `/submissions` endpoint when `API_URL` is set.
 A client of the REST API, using Telegram's Bot API directly (long polling, no extra
 framework). It starts automatically with `serve` when `TELEGRAM_BOT_TOKEN` is set.
 
-- `/due`, `/due 30`: list with 🔗 open-submission and ✅ done buttons
-- `/done 115`, `/undo 115`, `/sync`, `/help`
-- Delivers reminders, "new / moved deadline" and "✅ submitted on POLITEMall" alerts from `/notifications`,
-  acknowledging each one so nothing is sent twice
-- **Private:** the first chat to send `/start` becomes the owner (stored in the DB);
-  everyone else is refused
+Menu buttons are pinned under the chat (and in Telegram's `/` menu):
+
+| Button | Does |
+|---|---|
+| 📋 Due · 📅 Due 30 | Clean list for the next 7 / 30 days |
+| 🔄 Sync | Fetch from POLITEMall (and check submissions), then show the fresh list |
+| 🕘 History | Last 30 days: ✅ completed (auto / manual) and ❌ missed |
+| ✅ Mark complete · ↩️ Undo mark | Pick an item from a short list |
+| ✏️ Rename module | Show "Database" instead of "C207" everywhere |
+
+- Lists stay text-only; buttons appear only where you're choosing something
+- Alerts (8 AM 3 days before / day before / on the day, plus new, moved and
+  ✅ submitted deadlines) carry a single 🔗 Open-in-POLITEMall button
+- **Private:** the first chat to send `/start` becomes the owner; everyone else is
+  refused. New owners are offered module renaming as part of onboarding
 
 Create a bot with [@BotFather](https://t.me/BotFather) and put its token in `config/.env`.
 
@@ -180,8 +192,7 @@ above. No real student data is committed.
 - [ ] Same for quizzes and e-learning
 - [x] REST API (FastAPI) with API-key auth
 - [x] Scheduled sync + reminder planning (3 days, 1 day, morning of)
-- [x] Telegram bot (`/due`, `/done`, buttons, reminders, new/moved-deadline alerts)
-- [ ] Web app dashboard
+- [x] Telegram bot: menu, clean lists, history, pickers, module renaming, alerts
 - [ ] Deployment (API 24/7, laptop pushes submission checks)
 - [ ] Multi-user onboarding (paste your own feed link)
 - [ ] POLITEMall news add-on

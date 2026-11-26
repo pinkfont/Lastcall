@@ -41,6 +41,14 @@ CREATE TABLE IF NOT EXISTS deliverables (
 
 CREATE INDEX IF NOT EXISTS idx_deliverables_due ON deliverables (user_id, due_at);
 
+-- Friendlier names for module codes, chosen by the user ("C207" -> "Database").
+CREATE TABLE IF NOT EXISTS module_aliases (
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    module_code TEXT NOT NULL,
+    alias       TEXT NOT NULL,
+    PRIMARY KEY (user_id, module_code)
+);
+
 -- Messages waiting to be delivered (by the Telegram bot, the web app, ...).
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -280,6 +288,61 @@ class Store:
                 (_now(), user_id, notification_id),
             )
         return cur.rowcount == 1
+
+    # ---- history / pickers -----------------------------------------------------
+
+    def history(self, user_id: int, since: datetime, now: datetime) -> list[sqlite3.Row]:
+        """Completed since `since`, plus overdue items never marked done. Newest first."""
+        return self.conn.execute(
+            """SELECT * FROM deliverables
+               WHERE user_id = ? AND removed = 0 AND (
+                     (done = 1 AND julianday(done_at) >= julianday(?))
+                  OR (done = 0 AND julianday(due_at) < julianday(?) AND julianday(due_at) >= julianday(?)))
+               ORDER BY julianday(COALESCE(done_at, due_at)) DESC""",
+            (user_id, since.isoformat(), now.isoformat(), since.isoformat()),
+        ).fetchall()
+
+    def recently_done(self, user_id: int, since: datetime, limit: int = 20) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """SELECT * FROM deliverables WHERE user_id = ? AND done = 1
+                 AND julianday(done_at) >= julianday(?)
+               ORDER BY julianday(done_at) DESC LIMIT ?""",
+            (user_id, since.isoformat(), limit),
+        ).fetchall()
+
+    def open_items(self, user_id: int, since: datetime, until: datetime) -> list[sqlite3.Row]:
+        """Not done, due between `since` (recently overdue) and `until`. For the picker."""
+        return self.conn.execute(
+            """SELECT * FROM deliverables WHERE user_id = ? AND done = 0 AND removed = 0
+                 AND due_at >= ? AND due_at <= ? ORDER BY due_at""",
+            (user_id, since.isoformat(), until.isoformat()),
+        ).fetchall()
+
+    # ---- module names ----------------------------------------------------------
+
+    def aliases(self, user_id: int) -> dict[str, str]:
+        return {r["module_code"]: r["alias"] for r in self.conn.execute(
+            "SELECT module_code, alias FROM module_aliases WHERE user_id = ?", (user_id,))}
+
+    def set_alias(self, user_id: int, module_code: str, alias: str | None) -> None:
+        with self.conn:
+            if alias:
+                self.conn.execute(
+                    """INSERT INTO module_aliases (user_id, module_code, alias) VALUES (?, ?, ?)
+                       ON CONFLICT (user_id, module_code) DO UPDATE SET alias = excluded.alias""",
+                    (user_id, module_code, alias))
+            else:
+                self.conn.execute("DELETE FROM module_aliases WHERE user_id = ? AND module_code = ?",
+                                  (user_id, module_code))
+
+    def modules(self, user_id: int, since: datetime) -> list[sqlite3.Row]:
+        """Modules with something due since `since` (i.e. this semester's, not old ones)."""
+        return self.conn.execute(
+            """SELECT module_code, MAX(module_name) AS module_name FROM deliverables
+               WHERE user_id = ? AND module_code != '' AND due_at >= ?
+               GROUP BY module_code ORDER BY module_code""",
+            (user_id, since.isoformat()),
+        ).fetchall()
 
     def get(self, user_id: int, item_id: int) -> sqlite3.Row | None:
         return self.conn.execute(

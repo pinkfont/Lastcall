@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Security
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import Settings, load_settings
 from .db import Store
@@ -34,6 +34,7 @@ class DeliverableOut(BaseModel):
     uid: str
     module_code: str
     module_name: str
+    module: str  # what to show: the user's name for the module, or its code
     title: str
     kind: str
     due_at: datetime
@@ -63,6 +64,16 @@ class StatusOut(BaseModel):
     submission_check: str
 
 
+class ModuleOut(BaseModel):
+    code: str
+    name: str
+    alias: str | None
+
+
+class AliasIn(BaseModel):
+    alias: str = Field(min_length=1, max_length=30)
+
+
 class OwnerIn(BaseModel):
     chat_id: int
 
@@ -75,9 +86,10 @@ class SubmissionsOut(BaseModel):
     marked_done: list[str]
 
 
-def _deliverable(row) -> DeliverableOut:
+def _deliverable(row, aliases: dict[str, str] | None = None) -> DeliverableOut:
     return DeliverableOut(
         id=row["id"], uid=row["uid"], module_code=row["module_code"], module_name=row["module_name"],
+        module=(aliases or {}).get(row["module_code"]) or row["module_code"],
         title=row["title"], kind=row["kind"], due_at=datetime.fromisoformat(row["due_at"]),
         link=row["link"], done=bool(row["done"]), done_source=row["done_source"],
     )
@@ -165,21 +177,22 @@ def create_app(settings: Settings | None = None, run_scheduler: bool = True,
                           store: Store = Depends(store_dep), user_id: int = Depends(user_dep)):
         now = datetime.now(tz)
         until = None if all else now + timedelta(days=days or 7)
-        return [_deliverable(r) for r in store.upcoming(user_id, now, until, include_done)]
+        aliases = store.aliases(user_id)
+        return [_deliverable(r, aliases) for r in store.upcoming(user_id, now, until, include_done)]
 
     @app.post("/deliverables/{item_id}/done", response_model=DeliverableOut, dependencies=protected)
     def mark_done(item_id: int, store: Store = Depends(store_dep), user_id: int = Depends(user_dep)):
         row = store.set_done(user_id, item_id, done=True, source="manual")
         if row is None:
             raise HTTPException(404, "No such deliverable")
-        return _deliverable(row)
+        return _deliverable(row, store.aliases(user_id))
 
     @app.post("/deliverables/{item_id}/undo", response_model=DeliverableOut, dependencies=protected)
     def undo(item_id: int, store: Store = Depends(store_dep), user_id: int = Depends(user_dep)):
         row = store.set_done(user_id, item_id, done=False)
         if row is None:
             raise HTTPException(404, "No such deliverable")
-        return _deliverable(row)
+        return _deliverable(row, store.aliases(user_id))
 
     @app.post("/sync", response_model=SyncOut, dependencies=protected)
     async def sync_now():
@@ -199,12 +212,13 @@ def create_app(settings: Settings | None = None, run_scheduler: bool = True,
     def notifications(store: Store = Depends(store_dep), user_id: int = Depends(user_dep)):
         """Pending messages for the bot to send. Acknowledge each one after sending."""
         out = []
+        aliases = store.aliases(user_id)
         for n in store.pending_notifications(user_id):
             item = store.get(user_id, n["deliverable_id"])
             if n["kind"].startswith("remind_") and item["done"]:
                 store.ack_notification(user_id, n["id"])  # finished it already: don't nag
                 continue
-            out.append(NotificationOut(id=n["id"], kind=n["kind"], deliverable=_deliverable(item)))
+            out.append(NotificationOut(id=n["id"], kind=n["kind"], deliverable=_deliverable(item, aliases)))
         return out
 
     @app.post("/notifications/{notification_id}/ack", dependencies=protected)
@@ -212,6 +226,51 @@ def create_app(settings: Settings | None = None, run_scheduler: bool = True,
         if not store.ack_notification(user_id, notification_id):
             raise HTTPException(404, "No such pending notification")
         return {"acked": notification_id}
+
+    @app.get("/history", response_model=list[DeliverableOut], dependencies=protected)
+    def history(days: int = Query(30, ge=1, le=365), store: Store = Depends(store_dep),
+                user_id: int = Depends(user_dep)):
+        """Completed in the last `days` days, plus overdue items that were never done."""
+        now = datetime.now(tz)
+        aliases = store.aliases(user_id)
+        return [_deliverable(r, aliases) for r in store.history(user_id, now - timedelta(days=days), now)]
+
+    @app.get("/pickers/complete", response_model=list[DeliverableOut], dependencies=protected)
+    def complete_choices(store: Store = Depends(store_dep), user_id: int = Depends(user_dep)):
+        """What can be marked complete: open items from the last 7 days to 30 days ahead."""
+        now = datetime.now(tz)
+        aliases = store.aliases(user_id)
+        rows = store.open_items(user_id, now - timedelta(days=7), now + timedelta(days=30))
+        return [_deliverable(r, aliases) for r in rows]
+
+    @app.get("/pickers/undo", response_model=list[DeliverableOut], dependencies=protected)
+    def undo_choices(store: Store = Depends(store_dep), user_id: int = Depends(user_dep)):
+        """Recently completed items (last 30 days), newest first."""
+        aliases = store.aliases(user_id)
+        rows = store.recently_done(user_id, datetime.now(tz) - timedelta(days=30))
+        return [_deliverable(r, aliases) for r in rows]
+
+    @app.get("/modules", response_model=list[ModuleOut], dependencies=protected)
+    def modules(store: Store = Depends(store_dep), user_id: int = Depends(user_dep)):
+        """This semester's modules (anything due in the last 60 days or later)."""
+        aliases = store.aliases(user_id)
+        rows = store.modules(user_id, datetime.now(tz) - timedelta(days=60))
+        return [ModuleOut(code=r["module_code"], name=r["module_name"], alias=aliases.get(r["module_code"]))
+                for r in rows]
+
+    @app.put("/modules/{code}/alias", response_model=ModuleOut, dependencies=protected)
+    def rename_module(code: str, body: AliasIn, store: Store = Depends(store_dep),
+                      user_id: int = Depends(user_dep)):
+        alias = " ".join(body.alias.split())
+        if not alias:
+            raise HTTPException(422, "Name can't be empty")
+        store.set_alias(user_id, code, alias)
+        return ModuleOut(code=code, name="", alias=alias)
+
+    @app.delete("/modules/{code}/alias", dependencies=protected)
+    def reset_module(code: str, store: Store = Depends(store_dep), user_id: int = Depends(user_dep)):
+        store.set_alias(user_id, code, None)
+        return {"code": code, "alias": None}
 
     @app.get("/status", response_model=StatusOut, dependencies=protected)
     def get_status():

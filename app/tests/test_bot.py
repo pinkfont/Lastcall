@@ -2,41 +2,44 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
 
 from duetracker.api import create_app
 from duetracker.config import Settings
-from duetracker.telegram_bot import Bot, DuetrackerAPI, list_message
+from duetracker.telegram_bot import (BTN_COMPLETE, BTN_DUE, BTN_DUE30, BTN_HISTORY, BTN_RENAME,
+                                     BTN_SYNC, BTN_UNDO, MENU, Bot, DuetrackerAPI, due_list)
 from tests.test_api import ics
 
 KEY = "k"
 OWNER, STRANGER = 111, 999
+SGT = ZoneInfo("Asia/Singapore")
 
 
 class FakeTelegram:
     def __init__(self):
         self.sent, self.edits, self.answers = [], [], []
 
-    async def send(self, chat_id, text, buttons=None):
-        self.sent.append({"chat_id": chat_id, "text": text, "buttons": buttons})
+    async def send(self, chat_id, text, markup=None):
+        self.sent.append({"chat_id": chat_id, "text": text, "markup": markup})
         return {"message_id": len(self.sent)}
 
-    async def edit(self, chat_id, message_id, text, buttons=None):
-        self.edits.append({"chat_id": chat_id, "text": text, "buttons": buttons})
+    async def edit(self, chat_id, message_id, text, markup=None):
+        self.edits.append({"chat_id": chat_id, "message_id": message_id, "text": text, "markup": markup})
 
     async def answer(self, callback_id, text=""):
         self.answers.append(text)
 
 
-def msg(chat_id, text, update_id=1):
-    return {"update_id": update_id, "message": {"chat": {"id": chat_id}, "text": text}}
+def msg(chat_id, text):
+    return {"update_id": 1, "message": {"chat": {"id": chat_id}, "text": text}}
 
 
-def button(chat_id, data, text):
-    return {"update_id": 9, "callback_query": {"id": "cb", "data": data, "message": {
-        "chat": {"id": chat_id}, "message_id": 1, "text": text}}}
+def tap(chat_id, data, message_id=1):
+    return {"update_id": 2, "callback_query": {"id": "cb", "data": data, "message": {
+        "chat": {"id": chat_id}, "message_id": message_id, "text": ""}}}
 
 
 @pytest.fixture
@@ -44,154 +47,233 @@ def world(tmp_path):
     now = datetime.now(timezone.utc)
     feed = tmp_path / "feed.ics"
     feed.write_text(ics([("u1", "Soon", now + timedelta(hours=20)),
-                         ("u2", "Next week", now + timedelta(days=6))]), encoding="utf-8")
+                         ("u2", "Next week", now + timedelta(days=6)),
+                         ("u3", "Later", now + timedelta(days=20)),
+                         ("u0", "Missed", now - timedelta(days=3))]), encoding="utf-8")
     settings = Settings(feed_source=str(feed), db_path=str(tmp_path / "t.db"), user_name="me",
                         timezone="Asia/Singapore", politemall_url="https://lms.example.edu",
                         session_dir=str(tmp_path / ".s"), api_key=KEY)
     app = create_app(settings, run_scheduler=False)
 
-    async def make():
+    async def make(start=True):
         http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://api")
         api = DuetrackerAPI("http://api", KEY, http)
         await api.sync()
         tg = FakeTelegram()
         bot = Bot(tg, api)
         await bot.load_owner()
+        if start:
+            await bot.handle_update(msg(OWNER, "/start"))
         return bot, tg, http
     return make
 
 
-def run(coro):
-    return asyncio.run(coro)
+def run(scenario, world, start=True):
+    async def wrapper():
+        bot, tg, http = await world(start)
+        try:
+            return await scenario(bot, tg)
+        finally:
+            await http.aclose()
+    return asyncio.run(wrapper())
 
 
-def test_first_start_claims_ownership_and_strangers_are_refused(world):
-    async def scenario():
-        bot, tg, http = await world()
+# ---- ownership & onboarding -------------------------------------------------------
+
+def test_first_start_claims_ownership_shows_menu_and_offers_rename(world):
+    async def s(bot, tg):
         await bot.handle_update(msg(OWNER, "/start"))
         await bot.handle_update(msg(STRANGER, "/start"))
-        await bot.handle_update(msg(STRANGER, "/due"))
-        await http.aclose()
+        await bot.handle_update(msg(STRANGER, BTN_DUE))
         return bot, tg
-    bot, tg = run(scenario())
+    bot, tg = run(s, world, start=False)
     assert bot.owner == OWNER
-    assert "now the owner" in tg.sent[0]["text"]
-    assert tg.sent[1] == {"chat_id": STRANGER, "text": "Sorry, this is a private bot.", "buttons": None}
-    assert len(tg.sent) == 2  # stranger's /due is ignored
+    assert "now the owner" in tg.sent[0]["text"] and tg.sent[0]["markup"] == MENU
+    assert tg.sent[1]["markup"]["inline_keyboard"][0][0]["callback_data"] == "rename"
+    assert tg.sent[2]["text"] == "Sorry, this is a private bot."
+    assert len(tg.sent) == 3  # the stranger's Due tap is ignored
 
 
-def test_owner_survives_restart(world):
-    async def scenario():
-        bot, tg, http = await world()
-        await bot.handle_update(msg(OWNER, "/start"))
-        fresh = Bot(FakeTelegram(), bot.api)
-        await fresh.load_owner()
-        await http.aclose()
-        return fresh
-    assert run(scenario()).owner == OWNER
+# ---- lists --------------------------------------------------------------------------
 
-
-def test_due_lists_items_with_buttons(world):
-    async def scenario():
-        bot, tg, http = await world()
-        await bot.handle_update(msg(OWNER, "/start"))
-        await bot.handle_update(msg(OWNER, "/due"))
-        await http.aclose()
+def test_due_is_a_clean_list_without_item_buttons(world):
+    async def s(bot, tg):
+        await bot.handle_update(msg(OWNER, BTN_DUE))
         return tg.sent[-1]
-    out = run(scenario())
-    assert "2 due in the next 7 days" in out["text"]
-    assert "Soon" in out["text"] and "Next week" in out["text"]
-    assert out["buttons"][0][0]["text"] == "🔗 1" and out["buttons"][0][1]["callback_data"].startswith("done:")
+    out = run(s, world)
+    assert "Due in the next 7 days (2)" in out["text"]
+    assert "Soon" in out["text"] and "Next week" in out["text"] and "Later" not in out["text"]
+    assert "#" not in out["text"]          # no ids
+    assert out["markup"] == MENU           # only the menu, no ✅/🔗 per item
 
 
-def test_done_button_marks_item_and_refreshes_list(world):
-    async def scenario():
-        bot, tg, http = await world()
-        await bot.handle_update(msg(OWNER, "/start"))
-        await bot.handle_update(msg(OWNER, "/due"))
-        first_id = tg.sent[-1]["buttons"][0][1]["callback_data"]
-        await bot.handle_update(button(OWNER, first_id, "2 due in the next 7 days\n1. C999 Soon"))
-        remaining = await bot.api.deliverables(7)
-        await http.aclose()
-        return tg, remaining
-    tg, remaining = run(scenario())
-    assert tg.answers == ["Marked done ✅"]
-    assert "1 due in the next 7 days" in tg.edits[-1]["text"]
-    assert [i["title"] for i in remaining] == ["Next week"]
+def test_due_30_and_slash_commands(world):
+    async def s(bot, tg):
+        await bot.handle_update(msg(OWNER, BTN_DUE30))
+        await bot.handle_update(msg(OWNER, "/due 30"))
+        await bot.handle_update(msg(OWNER, "/due30"))
+        return [m["text"] for m in tg.sent[-3:]]
+    for text in run(s, world):
+        assert "Due in the next 30 days (3)" in text
 
 
-def test_done_and_undo_commands(world):
-    async def scenario():
-        bot, tg, http = await world()
-        await bot.handle_update(msg(OWNER, "/start"))
-        item = (await bot.api.deliverables(7))[0]
-        await bot.handle_update(msg(OWNER, f"/done {item['id']}"))
-        await bot.handle_update(msg(OWNER, f"/undo #{item['id']}"))
-        await bot.handle_update(msg(OWNER, "/done 9999"))
-        await bot.handle_update(msg(OWNER, "/done"))
-        await http.aclose()
-        return [s["text"] for s in tg.sent[1:]]
-    texts = run(scenario())
-    assert texts[0].startswith("✅ Marked done") and texts[1].startswith("↩️ Unmarked")
-    assert texts[2] == "There's no deliverable #9999."
-    assert texts[3].startswith("Usage:")
+def test_sync_shows_status_then_fresh_due_list(world):
+    async def s(bot, tg):
+        await bot.handle_update(msg(OWNER, BTN_SYNC))
+        return tg
+    tg = run(s, world)
+    assert tg.sent[-2]["text"].startswith("🔄 Syncing")
+    assert tg.edits[-1]["text"].startswith("✔️ Synced.")
+    assert "Submissions aren't checked yet" in tg.edits[-1]["text"]  # not logged in, in tests
+    assert "Due in the next 7 days" in tg.sent[-1]["text"]
 
 
-def test_notifications_are_sent_once_with_buttons(world):
-    async def scenario():
-        bot, tg, http = await world()
-        assert await bot.deliver_notifications() == 0  # no owner yet: nothing sent
-        await bot.handle_update(msg(OWNER, "/start"))
+def test_history_shows_completed_and_incomplete(world):
+    async def s(bot, tg):
+        soon = (await bot.api.deliverables(7))[0]
+        await bot.api.done(soon["id"])
+        await bot.api._req("POST", "/submissions", json={"uids": ["u2"]})
+        await bot.handle_update(msg(OWNER, BTN_HISTORY))
+        return tg.sent[-1]["text"]
+    text = run(s, world)
+    assert "✅ <b>C999</b> · Soon (manual)" in text
+    assert "✅ <b>C999</b> · Next week (auto)" in text
+    assert "❌ <b>C999</b> · Missed (incomplete)" in text
+
+
+# ---- pickers ------------------------------------------------------------------------
+
+def test_mark_complete_picker(world):
+    async def s(bot, tg):
+        await bot.handle_update(msg(OWNER, BTN_COMPLETE))
+        rows = tg.sent[-1]["markup"]["inline_keyboard"]
+        soon = next(r[0] for r in rows if "Soon" in r[0]["text"])
+        await bot.handle_update(tap(OWNER, soon["callback_data"]))
+        remaining = [i["title"] for i in await bot.api.deliverables(7)]
+        return rows, tg, remaining
+    rows, tg, remaining = run(s, world)
+    labels = [r[0]["text"] for r in rows]
+    assert any(label.startswith("C999 · Missed") for label in labels)  # recently overdue included
+    assert labels[-1] == "✖️ Cancel"
+    assert tg.edits[-1]["text"].startswith("✅ Marked complete: <b>C999</b> · Soon")
+    assert tg.edits[-1]["markup"] is None  # picker buttons removed
+    assert remaining == ["Next week"]
+
+
+def test_undo_picker(world):
+    async def s(bot, tg):
+        soon = (await bot.api.deliverables(7))[0]
+        await bot.api.done(soon["id"])
+        await bot.handle_update(msg(OWNER, BTN_UNDO))
+        rows = tg.sent[-1]["markup"]["inline_keyboard"]
+        await bot.handle_update(tap(OWNER, rows[0][0]["callback_data"]))
+        return tg, [i["title"] for i in await bot.api.deliverables(7)]
+    tg, remaining = run(s, world)
+    assert tg.edits[-1]["text"].startswith("↩️ Unmarked: <b>C999</b> · Soon")
+    assert remaining == ["Soon", "Next week"]
+
+
+def test_empty_undo_picker(world):
+    async def s(bot, tg):
+        await bot.handle_update(msg(OWNER, BTN_UNDO))
+        return tg.sent[-1]["text"]
+    assert run(s, world) == "Nothing completed in the last 30 days."
+
+
+def test_cancel_removes_picker(world):
+    async def s(bot, tg):
+        await bot.handle_update(msg(OWNER, BTN_COMPLETE))
+        await bot.handle_update(tap(OWNER, "cancel"))
+        return tg.edits[-1]
+    assert run(s, world)["text"] == "Okay, cancelled."
+
+
+# ---- renaming -----------------------------------------------------------------------
+
+def test_rename_module_applies_everywhere_and_can_reset(world):
+    async def s(bot, tg):
+        await bot.handle_update(msg(OWNER, BTN_RENAME))
+        rows = tg.sent[-1]["markup"]["inline_keyboard"]
+        await bot.handle_update(tap(OWNER, rows[0][0]["callback_data"]))  # rename:C999
+        await bot.handle_update(msg(OWNER, "  Database   Systems "))
+        confirm = tg.sent[-1]["text"]
+        await bot.handle_update(msg(OWNER, BTN_DUE))
+        due = tg.sent[-1]["text"]
+        await bot.handle_update(msg(OWNER, BTN_COMPLETE))
+        picker_label = tg.sent[-1]["markup"]["inline_keyboard"][0][0]["text"]
+        notes = await bot.api.notifications()
+        # reset
+        await bot.handle_update(msg(OWNER, "/rename"))
+        await bot.handle_update(tap(OWNER, "rename:C999"))
+        await bot.handle_update(msg(OWNER, "-"))
+        after = [m["module"] for m in await bot.api.deliverables(30)]
+        return rows, confirm, due, picker_label, notes, after
+    rows, confirm, due, picker_label, notes, after = run(s, world)
+    assert rows[0][0]["text"] == "C999 · Sample Module"
+    assert confirm == "✏️ <b>C999</b> will now show as <b>Database Systems</b>."
+    assert "<b>Database Systems</b> · Soon" in due and "C999" not in due
+    assert picker_label.startswith("Database Systems · ")
+    assert all(n["deliverable"]["module"] == "Database Systems" for n in notes)
+    assert set(after) == {"C999"}
+
+
+def test_menu_button_cancels_pending_rename(world):
+    async def s(bot, tg):
+        await bot.handle_update(tap(OWNER, "rename:C999"))
+        await bot.handle_update(msg(OWNER, BTN_DUE))  # changed their mind
+        return bot.renaming, (await bot.api.modules())[0]["alias"]
+    assert run(s, world) == (None, None)
+
+
+def test_onboarding_rename_button_opens_module_picker(world):
+    async def s(bot, tg):
+        await bot.handle_update(tap(OWNER, "rename"))
+        return tg.sent[-1]
+    out = run(s, world)
+    assert "Which module" in out["text"]
+
+
+# ---- notifications ------------------------------------------------------------------
+
+def test_reminders_have_only_an_open_link(world):
+    async def s(bot, tg):
         first = await bot.deliver_notifications()
         second = await bot.deliver_notifications()
-        await http.aclose()
         return tg, first, second
-    tg, first, second = run(scenario())
+    tg, first, second = run(s, world)
     assert (first, second) == (1, 0)
     note = tg.sent[-1]
-    assert note["chat_id"] == OWNER and "Soon" in note["text"] and note["text"].startswith("<b>")
-    assert note["buttons"][0][-1]["callback_data"].startswith("done:")
+    assert note["text"].startswith("<b>⏰") or note["text"].startswith("<b>🔴")
+    buttons = note["markup"]["inline_keyboard"]
+    assert buttons == [[{"text": "🔗 Open in POLITEMall", "url": buttons[0][0]["url"]}]]
 
 
-def test_sync_command(world):
-    async def scenario():
-        bot, tg, http = await world()
-        await bot.handle_update(msg(OWNER, "/start"))
-        await bot.handle_update(msg(OWNER, "/sync"))
-        await http.aclose()
-        return tg.sent[-1]["text"]
-    assert run(scenario()).startswith("Done: 2 deliverables in feed")
+def test_no_notifications_before_owner(world):
+    async def s(bot, tg):
+        return await bot.deliver_notifications()
+    assert run(s, world, start=False) == 0
 
 
-def test_empty_list_message():
-    from zoneinfo import ZoneInfo
-    text, buttons = list_message([], 7, ZoneInfo("Asia/Singapore"), datetime.now(ZoneInfo("Asia/Singapore")))
-    assert text.startswith("Nothing due") and buttons is None
-
-
-def test_expired_login_warns_once(world, monkeypatch):
-    async def scenario():
-        bot, tg, http = await world()
-        await bot.handle_update(msg(OWNER, "/start"))
-
+def test_expired_login_warns_once(world):
+    async def s(bot, tg):
         async def expired():
             return {"last_sync": None, "submission_check": "expired"}
         bot.api.status = expired
         await bot.warn_if_login_expired()
         await bot.warn_if_login_expired()
-        await http.aclose()
-        return [s["text"] for s in tg.sent if "expired" in s["text"]]
-    assert len(run(scenario())) == 1
+        return [m["text"] for m in tg.sent if "expired" in m["text"]]
+    assert len(run(s, world)) == 1
 
 
-def test_submitted_notification_heading(world):
-    async def scenario():
-        bot, tg, http = await world()
-        await bot.handle_update(msg(OWNER, "/start"))
-        await bot.api.done((await bot.api.deliverables(7))[0]["id"])  # manual: no alert
-        await bot.api._req("POST", "/submissions", json={"uids": ["u2"]})  # laptop push: alert
+def test_submitted_notification(world):
+    async def s(bot, tg):
+        await bot.deliver_notifications()  # clear the initial reminder
+        await bot.api._req("POST", "/submissions", json={"uids": ["u2"]})
         await bot.deliver_notifications()
-        await http.aclose()
-        return [s["text"] for s in tg.sent]
-    texts = run(scenario())
-    assert any(t.startswith("<b>✅ Submitted on POLITEMall</b>") and "Next week" in t for t in texts)
+        return tg.sent[-1]["text"]
+    assert run(s, world).startswith("<b>✅ Submitted on POLITEMall</b>\n<b>C999</b> · Next week")
+
+
+def test_empty_due_list():
+    now = datetime.now(SGT)
+    assert due_list([], 7, SGT, now) == "📋 Nothing due in the next 7 days 🎉"
